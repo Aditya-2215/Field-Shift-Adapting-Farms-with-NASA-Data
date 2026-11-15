@@ -1,0 +1,337 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+model User {
+  id                String                 @id @default(uuid())
+  fullName          String                 @map("full_name")
+  email             String                 @unique
+  passwordHash      String?                @map("password_hash")
+  emailVerified     Boolean                @default(false) @map("email_verified")
+  accountStatus     String                 @default("active") @map("account_status")
+  role              String                 @default("farmer")
+  preferredLanguage String                 @default("English") @map("preferred_language")
+  location          String                 @default("India")
+  createdAt         DateTime               @default(now()) @map("created_at")
+  updatedAt         DateTime               @updatedAt @map("updated_at")
+
+  oauthAccounts       OAuthAccount[]
+  refreshTokens       RefreshToken[]
+  passwordResetTokens PasswordResetToken[]
+  farms               Farm[]
+  farmerPreferences   FarmerPreference[]
+  rotationScenarios   RotationScenario[]
+  aiConversations     AiConversation[]
+  reports             Report[]
+  notifications       Notification[]
+  auditLogs           AuditLog[]
+
+  @@map("users")
+}
+
+model OAuthAccount {
+  id                String   @id @default(uuid())
+  userId            String   @map("user_id")
+  provider          String
+  providerAccountId String   @map("provider_account_id")
+  createdAt         DateTime @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+  @@index([userId])
+  @@map("oauth_accounts")
+}
+
+model RefreshToken {
+  id        String    @id @default(uuid())
+  userId    String    @map("user_id")
+  tokenHash String    @unique @map("token_hash")
+  expiresAt DateTime  @map("expires_at")
+  revokedAt DateTime? @map("revoked_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([tokenHash])
+  @@map("refresh_tokens")
+}
+
+model PasswordResetToken {
+  id        String    @id @default(uuid())
+  userId    String    @map("user_id")
+  tokenHash String    @unique @map("token_hash")
+  expiresAt DateTime  @map("expires_at")
+  usedAt    DateTime? @map("used_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([tokenHash])
+  @@map("password_reset_tokens")
+}
+
+model Farm {
+  id                  String   @id @default(uuid())
+  userId              String   @map("user_id")
+  farmName            String   @map("farm_name")
+  country             String
+  state               String
+  district            String
+  village             String?
+  latitude            Float
+  longitude           Float
+  area                Float
+  areaUnit            String   @default("hectares") @map("area_unit")
+  boundaryGeoJson     Json?    @map("boundary_geojson")
+  locationAccuracy    Float?   @map("location_accuracy")
+  addressComponents   Json?    @map("address_components")
+  irrigationType      String?  @map("irrigation_type")
+  irrigationAvailable Boolean  @default(true) @map("irrigation_available")
+  waterAvailability   String   @default("moderate") @map("water_availability")
+  waterConstraints    String?  @map("water_constraints")
+  currentCrops        Json?    @map("current_crops")
+  createdAt           DateTime @default(now()) @map("created_at")
+  updatedAt           DateTime @updatedAt @map("updated_at")
+
+  user                      User                       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  soilProfiles              SoilProfile[]
+  cropHistory               CropHistory[]
+  environmentalObservations EnvironmentalObservation[]
+  environmentalAssessments  EnvironmentalAssessment[]
+  farmerPreferences         FarmerPreference[]
+  rotationScenarios         RotationScenario[]
+  aiConversations           AiConversation[]
+  reports                   Report[]
+
+  @@index([userId])
+  @@index([latitude, longitude])
+  @@map("farms")
+}
+
+model SoilProfile {
+  id                String   @id @default(uuid())
+  farmId            String   @map("farm_id")
+  soilType          String?  @map("soil_type")
+  ph                Float?
+  nitrogen          Float?
+  phosphorus        Float?
+  potassium         Float?
+  organicCarbon     Float?   @map("organic_carbon")
+  organicMatter     Float?   @map("organic_matter")
+  soilTexture       String?  @map("soil_texture")
+  drainage          String?
+  labReportFileName String?  @map("lab_report_file_name")
+  labTestedDate     String?  @map("lab_tested_date")
+  notes             String?
+  createdAt         DateTime @default(now()) @map("created_at")
+  updatedAt         DateTime @updatedAt @map("updated_at")
+
+  farm Farm @relation(fields: [farmId], references: [id], onDelete: Cascade)
+
+  @@index([farmId])
+  @@map("soil_profiles")
+}
+
+model CropHistory {
+  id          String    @id @default(uuid())
+  farmId      String    @map("farm_id")
+  cropId      String?   @map("crop_id")
+  season      String
+  year        Int
+  sowingDate  DateTime? @map("sowing_date")
+  harvestDate DateTime? @map("harvest_date")
+  cropName    String?   @map("crop_name")
+  notes       String?
+
+  farm Farm @relation(fields: [farmId], references: [id], onDelete: Cascade)
+
+  @@index([farmId])
+  @@map("crop_history")
+}
+
+model EnvironmentalObservation {
+  id                String   @id @default(uuid())
+  farmId            String   @map("farm_id")
+  dataset           String
+  observationDate   DateTime @map("observation_date")
+  parameter         String
+  value             Float
+  unit              String
+  source            String
+  spatialResolution String?  @map("spatial_resolution")
+  qualityMetadata   Json?    @map("quality_metadata")
+  createdAt         DateTime @default(now()) @map("created_at")
+
+  farm Farm @relation(fields: [farmId], references: [id], onDelete: Cascade)
+
+  @@index([farmId])
+  @@index([observationDate])
+  @@map("environmental_observations")
+}
+
+model EnvironmentalAssessment {
+  id               String   @id @default(uuid())
+  farmId           String   @map("farm_id")
+  assessmentDate   DateTime @default(now()) @map("assessment_date")
+  temperatureRisk  String   @map("temperature_risk")
+  rainfallRisk     String   @map("rainfall_risk")
+  waterStress      String   @map("water_stress")
+  vegetationHealth String   @map("vegetation_health")
+  overallRisk      String   @map("overall_risk")
+  overallRiskScore Float?   @map("overall_risk_score")
+  methodology      Json?
+  dataCompleteness Float    @default(100.0) @map("data_completeness")
+  summary          String?
+  createdAt        DateTime @default(now()) @map("created_at")
+
+  farm Farm @relation(fields: [farmId], references: [id], onDelete: Cascade)
+
+  @@index([farmId])
+  @@index([assessmentDate])
+  @@map("environmental_assessments")
+}
+
+model CropKnowledge {
+  id                  String   @id @default(uuid())
+  cropName            String   @unique @map("crop_name")
+  scientificName      String?  @map("scientific_name")
+  category            String
+  temperatureRange    Json     @map("temperature_range")
+  waterRequirement    String   @map("water_requirement")
+  rainfallRequirement Json     @map("rainfall_requirement")
+  soilPreferences     Json     @map("soil_preferences")
+  growingSeason       String   @map("growing_season")
+  duration            String
+  nitrogenFixing      Boolean  @map("nitrogen_fixing")
+  agronomicMetadata   Json     @map("agronomic_metadata")
+
+  @@index([category])
+  @@map("crop_knowledge")
+}
+
+model FarmerPreference {
+  id              String   @id @default(uuid())
+  userId          String   @map("user_id")
+  farmId          String?  @map("farm_id")
+  waterPriority   Float    @default(25) @map("water_priority")
+  soilPriority    Float    @default(25) @map("soil_priority")
+  climatePriority Float    @default(25) @map("climate_priority")
+  marketPriority  Float    @default(10) @map("market_priority")
+  erosionPriority Float    @default(15) @map("erosion_priority")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  user User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  farm Farm? @relation(fields: [farmId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([farmId])
+  @@map("farmer_preferences")
+}
+
+model RotationScenario {
+  id                  String   @id @default(uuid())
+  farmId              String   @map("farm_id")
+  userId              String   @map("user_id")
+  scenarioName        String   @map("scenario_name")
+  strategyType        String?  @map("strategy_type")
+  cropSequence        Json     @map("crop_sequence")
+  componentScores     Json     @map("component_scores")
+  totalScore          Float    @map("total_score")
+  explanation         String?
+  risks               Json?
+  uncertaintyMetadata Json?    @map("uncertainty_metadata")
+  createdAt           DateTime @default(now()) @map("created_at")
+
+  farm Farm @relation(fields: [farmId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([farmId])
+  @@index([userId])
+  @@map("rotation_scenarios")
+}
+
+model AiConversation {
+  id        String   @id @default(uuid())
+  userId    String   @map("user_id")
+  farmId    String   @map("farm_id")
+  title     String
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  user     User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  farm     Farm        @relation(fields: [farmId], references: [id], onDelete: Cascade)
+  messages AiMessage[]
+
+  @@index([userId])
+  @@index([farmId])
+  @@map("ai_conversations")
+}
+
+model AiMessage {
+  id             String   @id @default(uuid())
+  conversationId String   @map("conversation_id")
+  role           String
+  content        String
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  conversation AiConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@index([conversationId])
+  @@map("ai_messages")
+}
+
+model Report {
+  id             String   @id @default(uuid())
+  userId         String   @map("user_id")
+  farmId         String   @map("farm_id")
+  reportType     String   @map("report_type")
+  filePath       String?  @map("file_path")
+  reportMetadata Json?    @map("report_metadata")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  farm Farm @relation(fields: [farmId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([farmId])
+  @@map("reports")
+}
+
+model Notification {
+  id        String    @id @default(uuid())
+  userId    String    @map("user_id")
+  title     String
+  message   String
+  readAt    DateTime? @map("read_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("notifications")
+}
+
+model AuditLog {
+  id           String   @id @default(uuid())
+  userId       String?  @map("user_id")
+  action       String
+  resourceType String   @map("resource_type")
+  resourceId   String?  @map("resource_id")
+  metadata     Json?
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([userId])
+  @@index([action])
+  @@index([createdAt])
+  @@map("audit_logs")
+}

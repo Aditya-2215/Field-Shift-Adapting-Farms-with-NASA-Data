@@ -1,0 +1,6 @@
+{
+  "name": "AgriShift AI",
+  "description": "NASA Earth observation-powered agricultural decision-support platform for soil health, climate risk analysis, and explainable crop rotation planning.",
+  "requestFramePermissions": ["geolocation"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
