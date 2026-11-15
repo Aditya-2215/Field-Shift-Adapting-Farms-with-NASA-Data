@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
-import { ArrowRight } from 'lucide-react';
+import { ArrowRight, CloudRain, FileCheck2, FlaskConical, Landmark, LocateFixed, MapPin, Phone, RefreshCw, Smartphone, Wheat } from 'lucide-react';
+import type { LucideIcon } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { DEMO_FARM } from '../../shared/data/demoFarm';
 import { useAuth } from '../contexts/AuthContext';
@@ -17,6 +18,177 @@ const seeded = (n: number) => {
   const x = Math.sin(n * 127.1 + 311.7) * 43758.5453;
   return x - Math.floor(x);
 };
+
+/* -------------------------------------------------------------------------- */
+/*  Live location (browser geolocation + OpenStreetMap reverse geocoding)      */
+/* -------------------------------------------------------------------------- */
+type LocationStatus = 'idle' | 'locating' | 'naming' | 'ready' | 'denied' | 'unavailable' | 'error';
+
+interface UserLocation {
+  status: LocationStatus;
+  lat: number | null;
+  lon: number | null;
+  accuracyM: number | null;
+  placeName: string | null;
+  retry: () => void;
+}
+
+const LOCATION_CACHE_KEY = 'agrishift:location:v1';
+
+const readLocationCache = () => {
+  try {
+    const raw = sessionStorage.getItem(LOCATION_CACHE_KEY);
+    return raw
+      ? (JSON.parse(raw) as { lat: number; lon: number; accuracyM: number | null; placeName: string | null })
+      : null;
+  } catch {
+    return null;
+  }
+};
+
+const writeLocationCache = (v: object) => {
+  try {
+    sessionStorage.setItem(LOCATION_CACHE_KEY, JSON.stringify(v));
+  } catch {
+    /* storage unavailable: fine */
+  }
+};
+
+async function reverseGeocode(lat: number, lon: number, signal: AbortSignal): Promise<string | null> {
+  const url = `https://nominatim.openstreetmap.org/reverse?format=jsonv2&zoom=12&addressdetails=1&lat=${lat}&lon=${lon}`;
+  const res = await fetch(url, { signal, headers: { Accept: 'application/json' } });
+  if (!res.ok) throw new Error('geocode failed');
+  const data = await res.json();
+  const a = data.address ?? {};
+  const locality = a.city || a.town || a.village || a.suburb || a.county || a.state_district;
+  const parts = [locality, a.state, a.country].filter(Boolean);
+  return parts.length ? parts.join(', ') : data.display_name ?? null;
+}
+
+function useUserLocation(): UserLocation {
+  const [state, setState] = useState<Omit<UserLocation, 'retry'>>({
+    status: 'idle',
+    lat: null,
+    lon: null,
+    accuracyM: null,
+    placeName: null,
+  });
+  const [nonce, setNonce] = useState(0);
+
+  const retry = useCallback(() => {
+    try {
+      sessionStorage.removeItem(LOCATION_CACHE_KEY);
+    } catch {
+      /* ignore */
+    }
+    setNonce((n) => n + 1);
+  }, []);
+
+  useEffect(() => {
+    if (typeof navigator === 'undefined' || !('geolocation' in navigator)) {
+      setState((s) => ({ ...s, status: 'unavailable' }));
+      return;
+    }
+
+    const cached = readLocationCache();
+    if (cached) {
+      setState({ status: 'ready', ...cached });
+      return;
+    }
+
+    const ctrl = new AbortController();
+    let cancelled = false;
+    setState({ status: 'locating', lat: null, lon: null, accuracyM: null, placeName: null });
+
+    navigator.geolocation.getCurrentPosition(
+      async (pos) => {
+        if (cancelled) return;
+        const { latitude: lat, longitude: lon, accuracy } = pos.coords;
+        const base = { lat, lon, accuracyM: Math.round(accuracy), placeName: null as string | null };
+        setState({ status: 'naming', ...base });
+        try {
+          const placeName = await reverseGeocode(lat, lon, ctrl.signal);
+          if (cancelled) return;
+          const done = { ...base, placeName };
+          writeLocationCache(done);
+          setState({ status: 'ready', ...done });
+        } catch {
+          if (cancelled) return;
+          // Coordinates are still valid even if the place name could not be fetched.
+          setState({ status: 'ready', ...base });
+        }
+      },
+      (err) => {
+        if (cancelled) return;
+        setState((s) => ({ ...s, status: err.code === err.PERMISSION_DENIED ? 'denied' : 'error' }));
+      },
+      { enableHighAccuracy: false, timeout: 12000, maximumAge: 10 * 60 * 1000 }
+    );
+
+    return () => {
+      cancelled = true;
+      ctrl.abort();
+    };
+  }, [nonce]);
+
+  return { ...state, retry };
+}
+
+const fmtCoord = (v: number, pos: string, neg: string) => `${Math.abs(v).toFixed(4)}° ${v >= 0 ? pos : neg}`;
+
+function LocationCard({ className = '', title = 'Your location' }: { className?: string; title?: string }) {
+  const { status, lat, lon, accuracyM, placeName, retry } = useUserLocation();
+  const busy = status === 'locating' || status === 'naming' || status === 'idle';
+  const hasFix = lat !== null && lon !== null;
+
+  return (
+    <div className={`glass loc-card rounded-xl px-4 py-3.5 ${className}`} role="status" aria-live="polite">
+      <div className="flex items-start gap-3">
+        <span className={`loc-pin ${busy ? 'is-busy' : ''}`} aria-hidden="true">
+          {hasFix ? <MapPin className="w-4 h-4" /> : <LocateFixed className="w-4 h-4" />}
+        </span>
+
+        <div className="min-w-0 flex-1">
+          <p className="text-xs font-semibold text-[#2F4A3A]">{title}</p>
+
+          {busy && !hasFix && (
+            <p className="text-sm text-[#24392C] mt-0.5">Finding you… allow location access if your browser asks.</p>
+          )}
+          {status === 'denied' && (
+            <p className="text-sm text-[#24392C] mt-0.5">Location is blocked. Allow it in your browser’s site settings, then try again.</p>
+          )}
+          {status === 'unavailable' && <p className="text-sm text-[#24392C] mt-0.5">This browser can’t share a location.</p>}
+          {status === 'error' && (
+            <p className="text-sm text-[#24392C] mt-0.5">Couldn’t get a position fix. Check your connection and try again.</p>
+          )}
+
+          {hasFix && (
+            <>
+              <p className="f-serif text-base leading-snug text-[#14261B] mt-0.5 break-words">
+                {placeName ?? (status === 'naming' ? 'Looking up place name…' : 'Place name unavailable')}
+              </p>
+              <p className="text-xs text-[#2F4A3A] num mt-1">
+                {fmtCoord(lat!, 'N', 'S')} · {fmtCoord(lon!, 'E', 'W')}
+                {accuracyM !== null && (
+                  <span className="text-[#55634F]">
+                    {' '}
+                    · ±{accuracyM >= 1000 ? `${(accuracyM / 1000).toFixed(1)} km` : `${accuracyM} m`}
+                  </span>
+                )}
+              </p>
+            </>
+          )}
+        </div>
+
+        {(status === 'denied' || status === 'error' || status === 'ready') && (
+          <button type="button" onClick={retry} className="loc-retry" aria-label="Refresh my location" title="Refresh my location">
+            <RefreshCw className="w-4 h-4" />
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
 
 /* -------------------------------------------------------------------------- */
 /*  Data                                                                       */
@@ -137,6 +309,88 @@ const STEPS = [
   { title: 'Simulation & Reports', desc: 'Test reduced-rainfall or heat-wave assumptions in the What-If Simulator, review the guidance notes, and export PDF/CSV reports for KVK review.' },
 ];
 
+const NAV_IDS = ['#seasons', '#farmers', '#datasets', '#workflow', '#rotations', '#transparency'];
+
+const CROP_HI: Record<string, string> = {
+  Rice: 'धान',
+  Maize: 'मक्का',
+  Wheat: 'गेहूँ',
+  Chickpea: 'चना',
+  Mustard: 'सरसों',
+  'Green Gram': 'मूँग',
+  'Black Gram': 'उड़द',
+};
+
+const I18N = {
+  en: {
+    nav: ['Seasons', 'For Farmers', 'NASA Data', 'How It Works', 'Rotation Model', 'Transparency'],
+    loc: 'Your location',
+    h1a: 'Read your farm the way satellites do, then',
+    h1b: 'decide what to plant',
+    h1c: 'next.',
+    sub: 'AgriShift pulls NASA Earth observations for your parcel, sets them beside your soil results, and lays crop rotations out side by side, so you can see what each one costs in water and nitrogen before the season starts.',
+    cta1: 'Explore Your Farm',
+    cta2: 'See what data it reads',
+    fKicker: 'Made for Indian farms',
+    fTitle: 'Built around how farming in India actually works',
+    fSub: 'Seasons, soil cards, MSP, the monsoon and your local KVK are part of every score, not an afterthought.',
+    termsTitle: 'Terms you already know',
+    termsNote: 'AgriShift is not affiliated with these schemes. They are listed because rotation choices touch them, so check current rules with your local KVK or agriculture office.',
+    helpline: 'Kisan Call Centre (toll-free)',
+  },
+  hi: {
+    nav: ['मौसम', 'किसानों के लिए', 'NASA डेटा', 'कैसे काम करता है', 'फसल चक्र', 'पारदर्शिता'],
+    loc: 'आपकी लोकेशन',
+    h1a: 'अपने खेत को उपग्रह की नज़र से पढ़ें, और',
+    h1b: 'तय करें आगे क्या बोना है।',
+    h1c: '',
+    sub: 'AgriShift आपके खेत के लिए NASA के उपग्रह आँकड़े लाता है, उन्हें आपकी मिट्टी की जाँच के साथ रखता है और फसल चक्र आमने-सामने दिखाता है, ताकि सीज़न शुरू होने से पहले आप जान सकें कि हर विकल्प में कितना पानी और नाइट्रोजन लगेगा।',
+    cta1: 'अपना खेत देखें',
+    cta2: 'कौन-सा डेटा पढ़ता है',
+    fKicker: 'भारतीय खेतों के लिए',
+    fTitle: 'भारत की खेती के तरीक़े के हिसाब से बना',
+    fSub: 'मौसम, मृदा कार्ड, MSP, मानसून और आपका स्थानीय KVK, हर स्कोर का हिस्सा हैं, बाद की सोच नहीं।',
+    termsTitle: 'जो शब्द आप पहले से जानते हैं',
+    termsNote: 'AgriShift इन योजनाओं से जुड़ा नहीं है। इन्हें इसलिए दिखाया गया है क्योंकि फसल चक्र के फ़ैसले इनसे जुड़ते हैं। ताज़ा नियम अपने KVK या कृषि कार्यालय से पूछें।',
+    helpline: 'किसान कॉल सेंटर (टोल-फ़्री)',
+  },
+};
+
+const SCHEME_CHIPS = ['MSP', 'Soil Health Card', 'KVK', 'PM-KISAN', 'PMFBY', 'e-NAM'];
+
+const FARMER_CARDS: { Icon: LucideIcon; en: [string, string]; hi: [string, string] }[] = [
+  {
+    Icon: FlaskConical,
+    en: ['Soil Health Card friendly', 'Enter pH and NPK from your Soil Health Card or a lab report. Anything missing is flagged, never guessed.'],
+    hi: ['मृदा स्वास्थ्य कार्ड के साथ', 'मृदा स्वास्थ्य कार्ड या लैब रिपोर्ट से pH और NPK भरें। जो कमी हो, वह साफ़ दिखती है, अंदाज़े से नहीं भरी जाती।'],
+  },
+  {
+    Icon: Landmark,
+    en: ['MSP in the trade-off', 'Each rotation notes MSP access, so a water-saving plan is never judged on water alone.'],
+    hi: ['हर फ़ैसले में MSP', 'हर फसल चक्र में MSP की पहुँच बताई जाती है, ताकि सिर्फ़ पानी बचत देखकर फ़ैसला न हो।'],
+  },
+  {
+    Icon: CloudRain,
+    en: ['Monsoon what-if', 'Slide rainfall down 40% and see how many millimetres of irrigation each rotation must make up.'],
+    hi: ['मानसून कम हुआ तो?', 'बारिश 40% तक घटाकर देखें कि हर फसल चक्र में कितने मिमी सिंचाई और लगेगी।'],
+  },
+  {
+    Icon: Wheat,
+    en: ['Kharif, Rabi, Zaid', 'Scored season by season, with crop names you use at home: धान, गेहूँ, चना, सरसों, मूँग, उड़द.'],
+    hi: ['खरीफ, रबी, जायद', 'हर मौसम के हिसाब से जाँच, और फसलों के वही नाम जो आप रोज़ बोलते हैं: धान, गेहूँ, चना, सरसों, मूँग, उड़द।'],
+  },
+  {
+    Icon: FileCheck2,
+    en: ['Reports your KVK can check', 'Export PDF or CSV with a verification list for Krishi Vigyan Kendra experts.'],
+    hi: ['KVK के लिए रिपोर्ट', 'कृषि विज्ञान केंद्र के विशेषज्ञों के लिए जाँच-सूची के साथ PDF या CSV निकालें।'],
+  },
+  {
+    Icon: Smartphone,
+    en: ['Made for the phone in your pocket', 'Large buttons, light pages and Hindi text, so planning works in the field and not only at a desk.'],
+    hi: ['जेब के फ़ोन पर चलने वाला', 'बड़े बटन, हल्के पेज और हिंदी में पाठ, ताकि योजना खेत पर भी बने, सिर्फ़ मेज़ पर नहीं।'],
+  },
+];
+
 /* -------------------------------------------------------------------------- */
 /*  Styles                                                                     */
 /* -------------------------------------------------------------------------- */
@@ -156,7 +410,8 @@ const STYLES = `
 @property --grain   { syntax: '<color>'; inherits: true; initial-value: #7FB04A; }
 @property --grain-b { syntax: '<color>'; inherits: true; initial-value: #A5CB6B; }
 
-html { scroll-behavior: smooth; scroll-padding-top: 5rem; }
+html { scroll-behavior: smooth; scroll-padding-top: 5rem; -webkit-text-size-adjust: 100%; text-size-adjust: 100%; overscroll-behavior-y: none; }
+body { margin: 0; -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; text-rendering: optimizeLegibility; }
 
 .scene {
   --forest: #1F3D2B;
@@ -167,35 +422,67 @@ html { scroll-behavior: smooth; scroll-padding-top: 5rem; }
   --muted: #55634F;
   --marigold: #E8A317;
   --clay: #B5482A;
-  font-family: 'Public Sans', system-ui, sans-serif;
+  --ease: cubic-bezier(.22,1,.36,1);
+  font-family: 'Public Sans', 'Noto Sans Devanagari', system-ui, sans-serif;
   color: var(--ink);
+  min-height: 100vh;
+  min-height: 100dvh;
+  width: 100%;
   transition: --hillA 2s ease, --hillB 2s ease, --hillC 2s ease, --plane1 2s ease,
               --cloud 2s ease, --stem 2s ease, --stem-b 2s ease, --grain 2s ease, --grain-b 2s ease;
 }
+.scene img { max-width: 100%; }
 /* Season palettes: hills, ground, vegetation and clouds all ease between these. */
 .scene[data-season='kharif'] { --hillA: #4E8F5A; --hillB: #3F7D4C; --hillC: #5B9A52; --plane1: #4C9A4F; --cloud: #EEF3F6; --stem: #4F8A3A; --stem-b: #7DAF5C; --grain: #7FB04A; --grain-b: #A5CB6B; --stalk-h: .78; --stalk-o: .95; }
 .scene[data-season='rabi']   { --hillA: #6A9A55; --hillB: #8AA94A; --hillC: #B7B54A; --plane1: #98A843; --cloud: #FFFFFF; --stem: #5A7D2E; --stem-b: #86A455; --grain: #D9A532; --grain-b: #E8C46A; --stalk-h: 1; --stalk-o: 1; }
 .scene[data-season='zaid']   { --hillA: #A99A47; --hillB: #C2A245; --hillC: #D6AE4F; --plane1: #C69A38; --cloud: #FFF3D6; --stem: #8A8440; --stem-b: #B4A867; --grain: #C9A86A; --grain-b: #DCC694; --stalk-h: .6; --stalk-o: .8; }
 
-.f-serif { font-family: 'Fraunces', Georgia, serif; font-weight: 600; letter-spacing: -0.015em; }
+.f-serif { font-family: 'Fraunces', 'Noto Sans Devanagari', Georgia, serif; font-weight: 600; letter-spacing: -0.015em; }
 .f-hand  { font-family: 'Caveat', cursive; font-weight: 600; }
 .f-deva  { font-family: 'Noto Sans Devanagari', sans-serif; font-weight: 600; }
 .num     { font-variant-numeric: tabular-nums; }
 
+/* ---------- Scroll progress ---------- */
+.progress { position: fixed; top: 0; left: 0; right: 0; height: 3px; z-index: 60; pointer-events: none;
+  background: linear-gradient(90deg, var(--marigold), #F3C85B); transform-origin: 0 50%;
+  transform: scaleX(var(--progress, 0)); will-change: transform; }
+
 /* ---------- Surfaces ---------- */
 .glass {
-  background: rgba(255,255,255,0.56);
-  backdrop-filter: blur(14px) saturate(140%);
-  -webkit-backdrop-filter: blur(14px) saturate(140%);
-  border: 1px solid rgba(255,255,255,0.75);
-  box-shadow: 0 14px 34px -18px rgba(25,50,30,0.45), inset 0 1px 0 rgba(255,255,255,0.8);
-  transition: box-shadow .5s ease;
+  position: relative; isolation: isolate;
+  background: linear-gradient(145deg, rgba(255,255,255,0.58), rgba(255,255,255,0.24));
+  backdrop-filter: blur(24px) saturate(190%);
+  -webkit-backdrop-filter: blur(24px) saturate(190%);
+  border: 1px solid rgba(255,255,255,0.7);
+  box-shadow: 0 20px 46px -22px rgba(20,45,28,0.55), inset 0 1px 0 rgba(255,255,255,0.9), inset 0 -1px 0 rgba(255,255,255,0.22);
+  transition: box-shadow .5s var(--ease), background .5s ease;
+}
+.glass::before {
+  content: ''; position: absolute; inset: 0; border-radius: inherit; z-index: -1; pointer-events: none;
+  background: radial-gradient(120% 80% at 0% 0%, rgba(255,255,255,0.55), rgba(255,255,255,0) 55%),
+              linear-gradient(315deg, rgba(255,255,255,0.16), rgba(255,255,255,0) 40%);
+}
+.glass-soft {
+  background: rgba(255,255,255,0.42);
+  backdrop-filter: blur(18px) saturate(170%);
+  -webkit-backdrop-filter: blur(18px) saturate(170%);
+  border: 1px solid rgba(255,255,255,0.72);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.9), 0 14px 30px -20px rgba(20,45,28,0.5);
+}
+.glass-dark {
+  position: relative; isolation: isolate;
+  background: linear-gradient(150deg, rgba(31,61,43,0.8), rgba(16,38,26,0.62));
+  backdrop-filter: blur(22px) saturate(170%);
+  -webkit-backdrop-filter: blur(22px) saturate(170%);
+  border: 1px solid rgba(255,255,255,0.22);
+  box-shadow: 0 26px 46px -24px rgba(8,28,16,0.85), inset 0 1px 0 rgba(255,255,255,0.28);
 }
 .glass-bar {
-  background: rgba(251,247,236,0.62);
-  backdrop-filter: blur(14px) saturate(150%);
-  -webkit-backdrop-filter: blur(14px) saturate(150%);
+  background: rgba(251,247,236,0.5);
+  backdrop-filter: blur(24px) saturate(190%);
+  -webkit-backdrop-filter: blur(24px) saturate(190%);
   border-bottom: 1px solid rgba(255,255,255,0.7);
+  padding-top: env(safe-area-inset-top, 0px);
   transition: box-shadow .4s ease, background-color .4s ease;
 }
 .scene[data-scrolled] .glass-bar { background: rgba(251,247,236,0.82); box-shadow: 0 10px 28px -20px rgba(20,40,25,0.6); }
@@ -206,10 +493,12 @@ html { scroll-behavior: smooth; scroll-padding-top: 5rem; }
   border: 1px solid rgba(255,255,255,0.2);
 }
 .paper {
-  background-color: var(--paper);
+  background-color: rgba(251,247,236,0.56);
   background-image: ${GRAIN};
-  border: 1px solid var(--edge);
-  box-shadow: 0 1px 0 #fff inset, 0 26px 44px -28px rgba(50,40,20,0.55);
+  backdrop-filter: blur(22px) saturate(175%);
+  -webkit-backdrop-filter: blur(22px) saturate(175%);
+  border: 1px solid rgba(255,255,255,0.72);
+  box-shadow: 0 1px 0 rgba(255,255,255,0.9) inset, 0 26px 50px -26px rgba(50,40,20,0.55);
 }
 .rule { border-color: var(--edge); }
 .map-frame { border-radius: 10px; overflow: hidden; box-shadow: 0 18px 36px -22px rgba(20,40,25,.6); transition: box-shadow .5s ease, transform .5s ease; }
@@ -248,6 +537,7 @@ html { scroll-behavior: smooth; scroll-padding-top: 5rem; }
 .stalk { position: absolute; bottom: 0; transform-origin: 50% 100%; animation: sway ease-in-out infinite; }
 
 /* ---------- Buttons ---------- */
+.btn-primary, .btn-ghost, .seg, .row-btn { touch-action: manipulation; -webkit-tap-highlight-color: transparent; }
 .btn-primary {
   position: relative; overflow: hidden; isolation: isolate;
   background: var(--forest); color: var(--paper); border-radius: 8px;
@@ -301,7 +591,7 @@ html { scroll-behavior: smooth; scroll-padding-top: 5rem; }
 .bar-fill { transition: width .8s cubic-bezier(.2,.8,.2,1), background .4s ease; }
 .row-btn { transition: background .25s ease; }
 
-.range { -webkit-appearance: none; appearance: none; width: 100%; height: 6px; border-radius: 999px; outline: none; background: #D9CFAE; }
+.range { -webkit-appearance: none; appearance: none; width: 100%; height: 6px; border-radius: 999px; outline: none; background: #D9CFAE; touch-action: pan-y; }
 .range::-webkit-slider-thumb { -webkit-appearance: none; width: 24px; height: 24px; border-radius: 50%; cursor: grab; background: var(--forest); border: 3px solid var(--paper); box-shadow: 0 3px 8px rgba(0,0,0,0.35); }
 .range::-moz-range-thumb { width: 20px; height: 20px; border-radius: 50%; cursor: grab; background: var(--forest); border: 3px solid var(--paper); box-shadow: 0 3px 8px rgba(0,0,0,0.35); }
 
@@ -312,17 +602,72 @@ html { scroll-behavior: smooth; scroll-padding-top: 5rem; }
 }
 .lens-grid { transition: background-size .8s cubic-bezier(.2,.8,.2,1), opacity .4s ease; }
 
+/* ---------- Location card ---------- */
+.loc-card { transition: transform .5s var(--ease), box-shadow .5s var(--ease); }
+.loc-card:hover { transform: translateY(-2px); }
+.loc-pin { flex: none; display: grid; place-items: center; width: 32px; height: 32px; border-radius: 999px; background: var(--forest); color: var(--paper); position: relative; }
+.loc-pin.is-busy::after { content: ''; position: absolute; inset: -4px; border-radius: inherit; border: 2px solid var(--marigold); opacity: 0; animation: locPulse 1.6s var(--ease) infinite; }
+.loc-retry { flex: none; display: grid; place-items: center; width: 32px; height: 32px; border-radius: 999px; color: var(--forest); transition: background .25s ease, transform .4s var(--ease); }
+.loc-retry:hover { background: rgba(31,61,43,.1); transform: rotate(90deg); }
+.loc-retry:focus-visible { outline: 2px solid var(--marigold); outline-offset: 2px; }
+
 /* ---------- Reveal ---------- */
-.reveal { opacity: 0; transform: translateY(20px); transition: opacity .8s ease, transform .8s cubic-bezier(.2,.8,.2,1); transition-delay: var(--d, 0ms); }
+.reveal { opacity: 0; transform: translate3d(0,26px,0); transition: opacity .9s var(--ease), transform .9s var(--ease); transition-delay: var(--d, 0ms); }
 .reveal.is-visible { opacity: 1; transform: none; }
-.hero-in { opacity: 0; animation: heroIn .9s cubic-bezier(.2,.8,.2,1) forwards; animation-delay: var(--d, 0ms); }
+.hero-in { opacity: 0; animation: heroIn .9s var(--ease) forwards; animation-delay: var(--d, 0ms); }
+
+/* ---------- Fit to every screen ---------- */
+.hero-fit { min-height: calc(100vh - 4.25rem); min-height: calc(100dvh - 4.25rem); display: flex; align-items: center; }
+.hero-fit > * { width: 100%; }
+section[id] { scroll-margin-top: 5.25rem; }
+#datasets, #workflow, #rotations, #transparency { content-visibility: auto; contain-intrinsic-size: auto 900px; }
+footer { padding-bottom: env(safe-area-inset-bottom, 0px); }
+.mobile-nav { display: flex; gap: 1.25rem; overflow-x: auto; scrollbar-width: none; padding: 0 1.5rem .65rem; font-size: .8rem; font-weight: 600; color: #3C4B40; -webkit-overflow-scrolling: touch; }
+.mobile-nav::-webkit-scrollbar { display: none; }
+.mobile-nav a { white-space: nowrap; padding: .25rem 0; }
+@media (min-width: 1024px) { .mobile-nav { display: none; } }
+@media (pointer: coarse) { .btn-primary, .btn-ghost { min-height: 44px; } }
+
+/* ---------- Tractor ---------- */
+.scene-tractor { position: fixed; left: 0; bottom: 7vh; width: 150px; z-index: 0; pointer-events: none;
+  animation: tractorDrive 56s linear infinite; will-change: transform; filter: drop-shadow(0 8px 6px rgba(20,40,20,0.35)); }
+.scene-tractor svg { width: 100%; height: auto; display: block; }
+.tractor-body { animation: tractorBob .55s ease-in-out infinite; }
+.tractor-wheel { animation: wheelSpin 2.2s linear infinite; }
+.tractor-puff { transform-box: fill-box; transform-origin: center; opacity: 0; animation: puffUp 2.4s ease-out infinite; }
+.tractor-puff.p2 { animation-delay: .8s; }
+.tractor-puff.p3 { animation-delay: 1.6s; }
+
+/* ---------- Indian touches ---------- */
+.motif { height: 14px; opacity: .95; background-repeat: repeat-x; background-position: center;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='28' height='14'><path d='M14 1 L21 7 L14 13 L7 7Z' fill='none' stroke='%23E8A317' stroke-width='1.6'/><circle cx='14' cy='7' r='1.8' fill='%232E7D4F'/><circle cx='0' cy='7' r='1.4' fill='%23E8A317'/><circle cx='28' cy='7' r='1.4' fill='%23E8A317'/></svg>"); }
+.tricolour { display: inline-flex; width: 36px; height: 12px; border-radius: 2px; overflow: hidden; border: 1px solid rgba(255,255,255,0.3); }
+.tricolour i { flex: 1; display: block; }
+.tricolour i:nth-child(1) { background: #FF9933; }
+.tricolour i:nth-child(2) { background: #FFFFFF; }
+.tricolour i:nth-child(3) { background: #138808; }
+.chip { display: inline-flex; align-items: center; padding: .3rem .75rem; border-radius: 999px; font-size: .78rem; font-weight: 600; color: var(--forest);
+  background: rgba(255,255,255,0.55); border: 1px solid rgba(255,255,255,0.85); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); }
+.farmer-ico { display: grid; place-items: center; width: 40px; height: 40px; border-radius: 12px; color: var(--paper);
+  background: linear-gradient(145deg, var(--forest-2), var(--forest)); box-shadow: inset 0 1px 0 rgba(255,255,255,0.3), 0 8px 16px -8px rgba(20,50,30,0.8); }
+.farmer-card:hover { background: rgba(255,255,255,0.62); box-shadow: inset 0 1px 0 #fff, 0 20px 36px -20px rgba(20,45,28,0.6); }
+.lang-toggle { display: inline-flex; padding: 2px; border-radius: 999px; border: 1px solid rgba(31,61,43,0.35); background: rgba(255,255,255,0.5);
+  font-size: 11px; font-weight: 600; color: var(--forest); touch-action: manipulation; }
+.lang-toggle span { padding: .22rem .55rem; border-radius: 999px; transition: background .3s ease, color .3s ease; }
+.lang-toggle span.on { background: var(--forest); color: var(--paper); }
+.lang-toggle:focus-visible { outline: 2px solid var(--marigold); outline-offset: 3px; }
 
 /* ---------- Keyframes ---------- */
+@keyframes tractorDrive { from { transform: translate3d(-25vw,0,0); } to { transform: translate3d(110vw,0,0); } }
+@keyframes tractorBob { 0%,100% { transform: translateY(0); } 50% { transform: translateY(1.6px); } }
+@keyframes wheelSpin { to { transform: rotate(360deg); } }
+@keyframes puffUp { 0% { opacity: .75; transform: translate(0,0) scale(.5); } 100% { opacity: 0; transform: translate(-16px,-34px) scale(1.8); } }
 @keyframes sway { 0%,100% { transform: rotate(-3deg); } 50% { transform: rotate(3deg); } }
 @keyframes cloudFly { from { transform: translate3d(-35vw,0,0); } to { transform: translate3d(120vw,0,0); } }
-@keyframes heroIn { from { opacity: 0; transform: translateY(18px); } to { opacity: 1; transform: none; } }
+@keyframes heroIn { from { opacity: 0; transform: translate3d(0,18px,0); } to { opacity: 1; transform: none; } }
 @keyframes draw { to { stroke-dashoffset: 0; } }
 @keyframes rainDrift { from { transform: translate3d(0,-60px,0); } to { transform: translate3d(-16px,0,0); } }
+@keyframes locPulse { 0% { transform: scale(.8); opacity: .9; } 100% { transform: scale(1.5); opacity: 0; } }
 
 /* ---------- Responsive ---------- */
 @media (max-width: 1023px) {
@@ -331,19 +676,26 @@ html { scroll-behavior: smooth; scroll-padding-top: 5rem; }
 @media (max-width: 640px) {
   .scene-stalks.back, .scene-rain { display: none; }
   .scene-sun { width: 90px; height: 90px; }
+  .scene-tractor { width: 105px; bottom: 9vh; }
   .map-frame:hover { transform: none; }
+  .glass, .glass-bar, .glass-cap { backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); }
+  .hero-fit { align-items: flex-start; }
+  table { font-size: 12.5px; }
 }
+@media (min-width: 1536px) { .scene { font-size: 17px; } }
 
 /* ---------- Reduced motion: keep gentle colour changes, drop movement ---------- */
 @media (prefers-reduced-motion: reduce) {
-  .scene-cloud, .stalk, .scene-rain { animation: none !important; }
-  .scene-rain { display: none; }
+  .scene-cloud, .stalk, .scene-rain, .loc-pin.is-busy::after { animation: none !important; }
+  .scene-rain, .progress { display: none; }
   .scene-sunwrap, .scene-stalks, .scene-hill { transition: none !important; transform: none !important; }
   .scene-sky, .scene-haze, .scene-sun, .scene-cloud { transition-duration: .4s; }
-  .map-frame:hover { transform: none; }
+  .map-frame:hover, .loc-card:hover { transform: none; }
   .draw { animation: none !important; stroke-dashoffset: 0; }
   .reveal, .hero-in { opacity: 1 !important; transform: none !important; animation: none !important; transition: none !important; }
   html { scroll-behavior: auto; }
+  .scene-tractor { animation: none !important; transform: translate3d(62vw,0,0) !important; }
+  .tractor-wheel, .tractor-body, .tractor-puff { animation: none !important; }
 }
 `;
 
@@ -353,8 +705,9 @@ html { scroll-behavior: smooth; scroll-padding-top: 5rem; }
 /**
  * Opens on the real current season, then advances Kharif → Rabi → Zaid as the visitor
  * scrolls. Picking a season manually re-anchors the cycle at the current scroll position,
- * so the selector and background always agree. Also owns the parallax variable (--sy) and
- * a data-scrolled flag, via a single passive, rAF-throttled listener cleaned up on unmount.
+ * so the selector and background always agree. Also owns the parallax variable (--sy), the
+ * scroll progress (--progress) and a data-scrolled flag, via a single passive, rAF-throttled
+ * listener cleaned up on unmount.
  */
 function useSeasonScroll(
   sceneRef: { current: HTMLElement | null },
@@ -377,7 +730,8 @@ function useSeasonScroll(
       else el.removeAttribute('data-scrolled');
 
       const max = Math.max(1, document.documentElement.scrollHeight - window.innerHeight);
-      const p = y / max;
+      const p = Math.min(1, Math.max(0, y / max));
+      el.style.setProperty('--progress', p.toFixed(4));
       // The Seasons section sits inside the first third, so it still shows the current season.
       const next = p < 0.3 ? 0 : p < 0.64 ? 1 : 2;
       if (next !== step.current) {
@@ -520,6 +874,10 @@ function SceneBackground({ season }: { season: SeasonKey }) {
           </span>
         ))}
       </div>
+
+      <div className="scene-tractor">
+        <Tractor />
+      </div>
     </div>
   );
 }
@@ -527,6 +885,48 @@ function SceneBackground({ season }: { season: SeasonKey }) {
 /* -------------------------------------------------------------------------- */
 /*  Small bits                                                                 */
 /* -------------------------------------------------------------------------- */
+function Tractor({ className = '', animated = true }: { className?: string; animated?: boolean }) {
+  const wheel = animated ? 'tractor-wheel' : undefined;
+  return (
+    <svg viewBox="0 0 200 125" className={className} fill="none" aria-hidden="true">
+      {animated && (
+        <g>
+          <circle className="tractor-puff p1" cx="150" cy="26" r="4" fill="#fff" />
+          <circle className="tractor-puff p2" cx="150" cy="26" r="4" fill="#fff" />
+          <circle className="tractor-puff p3" cx="150" cy="26" r="4" fill="#fff" />
+        </g>
+      )}
+      <g className={animated ? 'tractor-body' : undefined}>
+        <rect x="147" y="30" width="6" height="28" rx="2" fill="#3A3A3A" />
+        <rect x="144" y="27" width="12" height="5" rx="2" fill="#2B2B2B" />
+        <rect x="64" y="72" width="104" height="11" rx="4" fill="#8A2A1A" />
+        <path d="M98 58 h58 a8 8 0 0 1 8 8 v16 h-66z" fill="#D2452B" />
+        <rect x="104" y="51" width="50" height="9" rx="3" fill="#B53A22" />
+        <rect x="160" y="66" width="8" height="14" rx="2" fill="#E8A317" />
+        <path d="M100 66 h50 M100 72 h50" stroke="#9E3220" strokeWidth="1.6" />
+        <rect x="44" y="38" width="50" height="36" rx="4" fill="rgba(214,238,250,0.8)" stroke="#1F3D2B" strokeWidth="3" />
+        <path d="M69 38 V74" stroke="#1F3D2B" strokeWidth="2.5" />
+        <rect x="38" y="28" width="62" height="8" rx="4" fill="#1F3D2B" />
+        <rect x="52" y="62" width="14" height="8" rx="2" fill="#5A3A22" />
+      </g>
+      <g className={wheel} style={{ transformOrigin: '62px 88px' }}>
+        <circle cx="62" cy="88" r="32" fill="#1C1C1C" />
+        <circle cx="62" cy="88" r="32" stroke="#4A4A4A" strokeWidth="5" strokeDasharray="6 5" />
+        <circle cx="62" cy="88" r="21" fill="#E8A317" />
+        <path d="M62 69 V107 M43 88 H81 M49 75 L75 101 M75 75 L49 101" stroke="#1C1C1C" strokeWidth="3" />
+        <circle cx="62" cy="88" r="6" fill="#1C1C1C" />
+      </g>
+      <g className={wheel} style={{ transformOrigin: '160px 102px' }}>
+        <circle cx="160" cy="102" r="18" fill="#1C1C1C" />
+        <circle cx="160" cy="102" r="18" stroke="#4A4A4A" strokeWidth="4" strokeDasharray="5 4" />
+        <circle cx="160" cy="102" r="11" fill="#E8A317" />
+        <path d="M160 91 V113 M149 102 H171" stroke="#1C1C1C" strokeWidth="2.5" />
+        <circle cx="160" cy="102" r="3.5" fill="#1C1C1C" />
+      </g>
+    </svg>
+  );
+}
+
 function Sprout({ className = '' }: { className?: string }) {
   return (
     <svg viewBox="0 0 32 32" className={className} fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -573,6 +973,7 @@ export function LandingPage() {
   });
   const [authModalOpen, setAuthModalOpen] = useState(false);
   const [authModalMode, setAuthModalMode] = useState<'login' | 'register'>('login');
+  const [lang, setLang] = useState<'en' | 'hi'>('en');
 
   const handleExploreFarm = () => {
     enterDemoMode();
@@ -634,32 +1035,43 @@ export function LandingPage() {
   const score = CHECKS.reduce((s, c) => s + (checks[c.id] ? c.weight : 0), 0);
   const missing = CHECKS.filter((c) => !checks[c.id]);
 
+  const t = I18N[lang];
+  const navLinks = NAV_IDS.map((id, i) => [t.nav[i], id]);
+
   return (
-    <div ref={sceneRef} className="scene relative min-h-screen overflow-x-hidden" data-season={season}>
+    <div ref={sceneRef} className="scene relative overflow-x-hidden" data-season={season} data-lang={lang}>
       <style>{STYLES}</style>
+      <div className="progress" aria-hidden="true" />
       <SceneBackground season={season} />
 
       <div className="relative z-10">
         {/* ------------------------------ Header ------------------------------ */}
         <header className="sticky top-0 z-30 glass-bar">
-          <div className="max-w-6xl mx-auto px-6 py-3.5 flex items-center justify-between gap-8">
+          <div className="max-w-6xl mx-auto px-4 sm:px-6 py-3 sm:py-3.5 flex items-center justify-between gap-4 md:gap-8">
             <a href="#top" className="flex items-center gap-2 text-[#1F3D2B] whitespace-nowrap shrink-0">
               <Sprout className="w-6 h-6" />
               <span className="f-serif text-xl">AgriShift</span>
             </a>
 
-            <nav aria-label="Primary" className="hidden md:flex items-center gap-7 text-sm font-medium text-[#3C4B40]">
-              <a href="#seasons" className="u-link hover:text-[#1B2A20] whitespace-nowrap shrink-0">Seasons</a>
-              <a href="#datasets" className="u-link hover:text-[#1B2A20] whitespace-nowrap shrink-0">NASA Data</a>
-              <a href="#workflow" className="u-link hover:text-[#1B2A20] whitespace-nowrap shrink-0">How It Works</a>
-              <a href="#rotations" className="u-link hover:text-[#1B2A20] whitespace-nowrap shrink-0">Rotation Model</a>
-              <a href="#transparency" className="u-link hover:text-[#1B2A20] whitespace-nowrap shrink-0">Transparency</a>
+            <nav aria-label="Primary" className="hidden lg:flex items-center gap-5 xl:gap-7 text-sm font-medium text-[#3C4B40]">
+              {navLinks.map(([l, h]) => (
+                <a key={h} href={h} className="u-link hover:text-[#1B2A20] whitespace-nowrap shrink-0">{l}</a>
+              ))}
             </nav>
 
-            <div className="shrink-0 flex items-center gap-3">
+            <div className="shrink-0 flex items-center gap-2 sm:gap-3">
+              <button
+                type="button"
+                onClick={() => setLang(lang === 'en' ? 'hi' : 'en')}
+                className="lang-toggle"
+                aria-label="Switch language between English and Hindi"
+              >
+                <span className={lang === 'en' ? 'on' : ''}>EN</span>
+                <span className={`f-deva ${lang === 'hi' ? 'on' : ''}`}>हिं</span>
+              </button>
               {user ? (
                 <>
-                  <span className="hidden sm:inline text-xs font-medium text-[#1F3D2B]">
+                  <span className="hidden sm:inline text-xs font-medium text-[#1F3D2B] max-w-[10rem] truncate">
                     {user.name || user.email}
                   </span>
                   <button
@@ -678,7 +1090,7 @@ export function LandingPage() {
                       setAuthModalMode('login');
                       setAuthModalOpen(true);
                     }}
-                    className="px-3.5 py-1.5 text-xs font-semibold text-[#1F3D2B] hover:text-[#111C15] hover:bg-black/5 rounded-lg transition-colors whitespace-nowrap"
+                    className="px-3 sm:px-3.5 py-1.5 text-xs font-semibold text-[#1F3D2B] hover:text-[#111C15] hover:bg-black/5 rounded-lg transition-colors whitespace-nowrap"
                   >
                     Sign In
                   </button>
@@ -695,7 +1107,7 @@ export function LandingPage() {
                   <button
                     type="button"
                     onClick={handleExploreFarm}
-                    className="btn-primary px-3.5 py-1.5 text-xs font-medium whitespace-nowrap"
+                    className="btn-primary px-3 sm:px-3.5 py-1.5 text-xs font-medium whitespace-nowrap"
                   >
                     Explore Farm
                   </button>
@@ -703,13 +1115,24 @@ export function LandingPage() {
               )}
             </div>
           </div>
+
+          {/* Mobile section links (swipe sideways) */}
+          <nav aria-label="Sections" className="mobile-nav">
+            {navLinks.map(([l, h]) => (
+              <a key={h} href={h}>{l}</a>
+            ))}
+          </nav>
         </header>
 
         <main id="top">
           {/* ------------------------------- Hero ------------------------------- */}
-          <section className="max-w-6xl mx-auto px-6 pt-14 pb-24 lg:pt-20 lg:pb-28">
-            <div className="grid grid-cols-1 lg:grid-cols-12 gap-12 items-center">
+          <section className="hero-fit max-w-6xl mx-auto px-4 sm:px-6 pt-10 pb-16 lg:pt-12 lg:pb-20">
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-10 lg:gap-12 items-center">
               <div className="lg:col-span-7">
+                <p className="hero-in glass-soft inline-flex items-center gap-2 rounded-full px-3.5 py-1.5 text-sm text-[#1F3D2B] mb-4" style={cv({ '--d': '0ms' })}>
+                  <span aria-hidden="true">🙏</span>
+                  <span className="f-deva">नमस्ते किसान भाई</span>
+                </p>
                 <p className="hero-in text-[11px] font-semibold uppercase tracking-[0.16em] text-[#2F4A3A] mb-2" style={cv({ '--d': '40ms' })}>
                   NASA Space Apps Challenge 2026 · Field Shift
                 </p>
@@ -718,29 +1141,28 @@ export function LandingPage() {
                 </p>
                 <h1
                   className="hero-in f-serif text-[#14261B] leading-[1.06] mb-6"
-                  style={cv({ '--d': '160ms' }, { fontSize: 'clamp(2.4rem, 4.6vw, 4rem)', textWrap: 'balance' } as CSSProperties)}
+                  style={cv({ '--d': '160ms' }, { fontSize: 'clamp(2.1rem, 4.6vw, 4rem)', textWrap: 'balance' } as CSSProperties)}
                 >
-                  Read your farm the way satellites do, then{' '}
-                  <span className="relative inline-block whitespace-nowrap">
-                    decide what to plant
+                  {t.h1a}{' '}
+                  <span className="relative inline-block">
+                    {t.h1b}
                     <svg className="absolute left-0 -bottom-2 w-full h-3" viewBox="0 0 240 12" preserveAspectRatio="none" aria-hidden="true">
                       <path className="draw" d="M2 8 C 40 2, 80 11, 120 5 S 195 9, 238 4" stroke="#E8A317" strokeWidth="3.5" fill="none" strokeLinecap="round" />
                     </svg>
                   </span>{' '}
-                  next.
+                  {t.h1c}
                 </h1>
                 <p className="hero-in text-base lg:text-lg text-[#24392C] leading-relaxed max-w-xl mb-8" style={cv({ '--d': '260ms' })}>
-                  AgriShift pulls NASA Earth observations for your parcel, sets them beside your soil results, and lays
-                  crop rotations out side by side, so you can see what each one costs in water and nitrogen before the season starts.
+                  {t.sub}
                 </p>
 
                 <div className="hero-in flex flex-wrap items-center gap-3 mb-4" style={cv({ '--d': '340ms' })}>
                   <button type="button" onClick={handleExploreFarm} className="btn-primary inline-flex items-center gap-2 px-6 py-3 text-sm font-semibold whitespace-nowrap">
-                    <span>Explore Your Farm</span>
+                    <span>{t.cta1}</span>
                     <ArrowRight className="arrow w-4 h-4" />
                   </button>
                   <a href="#datasets" className="btn-ghost inline-flex items-center gap-2 px-6 py-3 text-sm font-semibold whitespace-nowrap">
-                    See what data it reads
+                    {t.cta2}
                   </a>
                 </div>
                 {!user && (
@@ -752,18 +1174,18 @@ export function LandingPage() {
                   </p>
                 )}
 
-                <dl className="hero-in glass rounded-xl px-5 py-4 grid grid-cols-3 gap-4 max-w-xl" style={cv({ '--d': '480ms' })}>
+                <dl className="hero-in glass rounded-xl px-4 sm:px-5 py-4 grid grid-cols-3 gap-3 sm:gap-4 max-w-xl" style={cv({ '--d': '480ms' })}>
                   {[
                     ['17', 'crops', 'ICAR & FAO agronomic profiles'],
                     ['8', 'NASA datasets', 'Live POWER + Earthdata adapters'],
                     ['4', 'strategies', 'Baseline vs soil & water models'],
                   ].map(([n, l, s]) => (
-                    <div key={l} className="border-l border-[#1F3D2B]/20 pl-4 first:border-l-0 first:pl-0">
-                      <dt className="text-sm text-[#1B2A20]">
-                        <span className="f-serif text-2xl num mr-1.5 text-[#1F3D2B]">{n}</span>
+                    <div key={l} className="border-l border-[#1F3D2B]/20 pl-3 sm:pl-4 first:border-l-0 first:pl-0 min-w-0">
+                      <dt className="text-xs sm:text-sm text-[#1B2A20]">
+                        <span className="f-serif text-xl sm:text-2xl num mr-1.5 text-[#1F3D2B]">{n}</span>
                         {l}
                       </dt>
-                      <dd className="text-xs text-[#4A5A4E] mt-1">{s}</dd>
+                      <dd className="text-[11px] sm:text-xs text-[#4A5A4E] mt-1">{s}</dd>
                     </div>
                   ))}
                 </dl>
@@ -771,15 +1193,17 @@ export function LandingPage() {
 
               {/* Printed photo with tape and a margin note */}
               <div className="lg:col-span-5 hero-in relative lg:pl-4" style={cv({ '--d': '280ms' })}>
-                <div className="relative mx-auto max-w-sm" style={{ transform: 'rotate(1.6deg)' }}>
+                <div className="relative mx-auto max-w-[17rem] sm:max-w-sm" style={{ transform: 'rotate(1.6deg)' }}>
                   <span className="tape -top-3 left-6" style={{ transform: 'rotate(-5deg)' }} />
                   <span className="tape -top-3 right-6" style={{ transform: 'rotate(4deg)' }} />
-                  <div className="print bg-white p-3 pb-14">
+                  <div className="print bg-white p-3 pb-14 relative">
                     <div className="aspect-[4/5] overflow-hidden bg-[#163026]">
                       <img
                         src="/src/assets/images/hero_agri_satellite_1794669905794.jpg"
                         alt="Aerial Earth observation view of geometric green crop fields and irrigation channels"
                         referrerPolicy="no-referrer"
+                        loading="eager"
+                        decoding="async"
                         className="w-full h-full object-cover"
                       />
                     </div>
@@ -789,9 +1213,11 @@ export function LandingPage() {
                   </div>
                 </div>
 
-                <div className="glass-cap rounded-lg text-white text-sm leading-snug px-4 py-3 max-w-[18rem] mt-6 ml-auto lg:-mt-2 lg:-ml-6 relative">
+                <div className="glass-cap rounded-lg text-white text-sm leading-snug px-4 py-3 max-w-[18rem] mt-6 mx-auto sm:ml-auto sm:mr-0 lg:-mt-2 lg:-ml-6 relative">
                   Our demonstration parcel: testing Kharif, Rabi and Zaid rotations against regional rainfall and heat anomalies.
                 </div>
+
+                <LocationCard title={t.loc} className="mt-5 max-w-sm mx-auto lg:mx-0 relative" />
 
                 <div className="hidden lg:flex absolute -right-2 top-2 items-start gap-1 f-hand text-xl text-[#14261B]" style={{ transform: 'rotate(5deg)' }} aria-hidden="true">
                   <span className="mt-6">the demo<br />parcel</span>
@@ -805,12 +1231,12 @@ export function LandingPage() {
           </section>
 
           {/* ------------------------------ Seasons ------------------------------ */}
-          <section id="seasons" className="max-w-6xl mx-auto px-6 pb-24">
-            <div className="glass rounded-2xl p-6 md:p-10 reveal">
-              <div className="grid grid-cols-1 md:grid-cols-12 gap-8 mb-8">
+          <section id="seasons" className="max-w-6xl mx-auto px-4 sm:px-6 pb-16 sm:pb-24">
+            <div className="glass rounded-2xl p-5 sm:p-6 md:p-10 reveal">
+              <div className="grid grid-cols-1 md:grid-cols-12 gap-6 md:gap-8 mb-8">
                 <div className="md:col-span-7">
                   <Kicker n="01">Seasons</Kicker>
-                  <h2 className="f-serif text-3xl md:text-4xl text-[#14261B] leading-tight" style={{ textWrap: 'balance' } as CSSProperties}>
+                  <h2 className="f-serif text-2xl sm:text-3xl md:text-4xl text-[#14261B] leading-tight" style={{ textWrap: 'balance' } as CSSProperties}>
                     The cropping year, counted the way farmers count it
                   </h2>
                 </div>
@@ -830,7 +1256,7 @@ export function LandingPage() {
                   <span className="block w-0 h-0 border-x-[6px] border-x-transparent border-t-[8px] border-t-[#B5482A]" />
                 </div>
 
-                <div className="flex h-16 rounded-lg overflow-hidden border border-white/80 shadow-sm" role="tablist" aria-label="Season">
+                <div className="flex h-14 sm:h-16 rounded-lg overflow-hidden border border-white/80 shadow-sm" role="tablist" aria-label="Season">
                   {SEASON_ORDER.map((k) => {
                     const s = SEASONS[k];
                     const active = season === k;
@@ -841,7 +1267,7 @@ export function LandingPage() {
                         role="tab"
                         aria-selected={active}
                         onClick={() => setSeason(k)}
-                        className="seg relative flex items-center justify-center gap-2 px-2 text-sm font-semibold border-r border-white/70 last:border-r-0"
+                        className="seg relative flex items-center justify-center gap-2 px-2 text-xs sm:text-sm font-semibold border-r border-white/70 last:border-r-0"
                         style={{
                           flex: s.months,
                           background: active ? s.color : `${s.color}55`,
@@ -855,16 +1281,16 @@ export function LandingPage() {
                     );
                   })}
                 </div>
-                <div className="grid grid-cols-12 mt-2 text-[11px] text-[#4A5A4E] num">
+                <div className="grid grid-cols-12 mt-2 text-[9px] sm:text-[11px] text-[#4A5A4E] num">
                   {MONTHS.map((m) => (
                     <span key={m} className="text-center">{m}</span>
                   ))}
                 </div>
               </div>
 
-              <div className="grid grid-cols-1 md:grid-cols-12 gap-8 mt-9 pt-8 border-t border-[#1F3D2B]/15">
+              <div className="grid grid-cols-1 md:grid-cols-12 gap-6 md:gap-8 mt-9 pt-8 border-t border-[#1F3D2B]/15">
                 <div className="md:col-span-5">
-                  <div className="f-serif text-5xl text-[#14261B] leading-none">{S.name}</div>
+                  <div className="f-serif text-4xl sm:text-5xl text-[#14261B] leading-none">{S.name}</div>
                   <div className="f-deva text-2xl text-[#1F3D2B] mt-2">{S.deva}</div>
                   <div className="text-sm text-[#4A5A4E] mt-2">{S.window}{season === todaySeason ? ' · this is the current season' : ''}</div>
                 </div>
@@ -872,20 +1298,67 @@ export function LandingPage() {
                   <p className="text-[#24392C] leading-relaxed">{S.note}</p>
                   <p className="text-sm mt-4">
                     <span className="font-semibold text-[#1B2A20]">Crops in the model:</span>{' '}
-                    <span className="text-[#2F4A3A]">{S.crops.join(', ')}</span>
+                    <span className="text-[#2F4A3A]">{S.crops.map((c) => `${c} (${CROP_HI[c]})`).join(', ')}</span>
                   </p>
                 </div>
               </div>
             </div>
           </section>
 
+          {/* ------------------------------ For Indian farmers ------------------------------ */}
+          <section id="farmers" className="max-w-6xl mx-auto px-4 sm:px-6 pb-16 sm:pb-24">
+            <div className="glass rounded-2xl p-5 sm:p-6 md:p-10">
+              <div className="reveal">
+                <Kicker n="भारत">{t.fKicker}</Kicker>
+                <h2 className="f-serif text-2xl sm:text-3xl md:text-4xl text-[#14261B] leading-tight max-w-3xl" style={{ textWrap: 'balance' } as CSSProperties}>
+                  {t.fTitle}
+                </h2>
+                <p className="text-sm sm:text-base text-[#2F4A3A] leading-relaxed max-w-2xl mt-4">{t.fSub}</p>
+              </div>
+
+              <div className="motif my-8" aria-hidden="true" />
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                {FARMER_CARDS.map(({ Icon, en, hi }, i) => {
+                  const [h, b] = lang === 'hi' ? hi : en;
+                  return (
+                    <article key={en[0]} className="farmer-card glass-soft rounded-xl p-5 reveal" style={cv({ '--d': `${i * 70}ms` })}>
+                      <span className="farmer-ico"><Icon className="w-5 h-5" /></span>
+                      <h3 className="f-serif text-lg mt-3 mb-1.5 text-[#14261B]">{h}</h3>
+                      <p className="text-sm text-[#2F4A3A] leading-relaxed">{b}</p>
+                    </article>
+                  );
+                })}
+              </div>
+
+              <div className="mt-8 grid grid-cols-1 md:grid-cols-12 gap-5 items-center reveal">
+                <div className="md:col-span-7">
+                  <p className="text-xs font-semibold text-[#2F4A3A] mb-2">{t.termsTitle}</p>
+                  <div className="flex flex-wrap gap-2">
+                    {SCHEME_CHIPS.map((c) => (
+                      <span key={c} className="chip">{c}</span>
+                    ))}
+                  </div>
+                  <p className="text-[11px] text-[#55634F] mt-3 leading-relaxed max-w-xl">{t.termsNote}</p>
+                </div>
+                <a href="tel:18001801551" className="md:col-span-5 glass-soft loc-card rounded-xl px-4 py-3.5 flex items-center gap-3">
+                  <span className="loc-pin"><Phone className="w-4 h-4" /></span>
+                  <span>
+                    <span className="block text-xs font-semibold text-[#2F4A3A]">{t.helpline}</span>
+                    <span className="f-serif text-xl num text-[#14261B]">1800-180-1551</span>
+                  </span>
+                </a>
+              </div>
+            </div>
+          </section>
+
           {/* ------------------------- Data: map + lens + table ------------------------- */}
-          <section id="datasets" className="max-w-6xl mx-auto px-6 pb-24">
-            <div className="paper rounded-lg p-6 md:p-10">
-              <div className="grid grid-cols-1 md:grid-cols-12 gap-8 mb-10 reveal">
+          <section id="datasets" className="max-w-6xl mx-auto px-4 sm:px-6 pb-16 sm:pb-24">
+            <div className="paper rounded-lg p-5 sm:p-6 md:p-10">
+              <div className="grid grid-cols-1 md:grid-cols-12 gap-6 md:gap-8 mb-10 reveal">
                 <div className="md:col-span-7">
                   <Kicker n="02">Earth observation</Kicker>
-                  <h2 className="f-serif text-3xl md:text-4xl text-[#14261B] leading-tight" style={{ textWrap: 'balance' } as CSSProperties}>
+                  <h2 className="f-serif text-2xl sm:text-3xl md:text-4xl text-[#14261B] leading-tight" style={{ textWrap: 'balance' } as CSSProperties}>
                     Eight NASA sources, and each one sees the ground at a different size
                   </h2>
                 </div>
@@ -896,28 +1369,28 @@ export function LandingPage() {
               </div>
 
               <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
-                <div className="lg:col-span-7 reveal">
-                  <div className="map-frame p-2 bg-white border border-[#E6DCC2] shadow-sm">
+                <div className="lg:col-span-7 reveal min-w-0">
+                  <div className="map-frame glass-soft p-2">
                     <FarmLeafletMap
                       farm={DEMO_FARM}
-                      heightClass="h-[380px]"
+                      heightClass="h-[300px] sm:h-[380px]"
                       baseLayer="satellite"
                       showBoundary={true}
                       showRiskZoneOverlay={true}
                       riskLevel="Moderate"
                     />
                   </div>
-                  <div className="flex flex-wrap items-center justify-between gap-3 text-xs text-[#55634F] pt-3">
+                  <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 text-xs text-[#55634F] pt-3">
                     <span>Interactive Parcel Preview · {DEMO_FARM.name} ({DEMO_FARM.area} ha)</span>
                     <span>Boundary geometry validated with Turf.js</span>
                   </div>
                 </div>
 
                 {/* Lens instrument */}
-                <div className="lg:col-span-5 reveal rounded-lg bg-[#1F3D2B] text-[#F4EEDC] p-5 shadow-[0_24px_40px_-24px_rgba(20,40,25,0.8)]" style={cv({ '--d': '120ms' })}>
-                  <div className="flex items-baseline justify-between mb-3">
+                <div className="lg:col-span-5 reveal rounded-lg glass-dark text-[#F4EEDC] p-5 min-w-0" style={cv({ '--d': '120ms' })}>
+                  <div className="flex items-baseline justify-between mb-3 gap-3">
                     <h3 className="f-serif text-lg">Pixel size over your parcel</h3>
-                    <span className="f-hand text-lg text-[#E8C46A]">60 km window</span>
+                    <span className="f-hand text-lg text-[#E8C46A] whitespace-nowrap">60 km window</span>
                   </div>
 
                   <div className="lens-field relative aspect-square w-full max-w-[290px] mx-auto rounded border border-white/40 overflow-hidden">
@@ -958,7 +1431,7 @@ export function LandingPage() {
 
               {/* Sources table */}
               <div className="mt-10 overflow-x-auto reveal">
-                <table className="w-full text-left text-sm border-collapse">
+                <table className="w-full text-left text-sm border-collapse min-w-[640px]">
                   <caption className="sr-only">NASA datasets, their pixel size and what they provide</caption>
                   <thead>
                     <tr className="text-[11px] uppercase tracking-[0.12em] text-[#55634F] border-b-2 border-[#1F3D2B]">
@@ -998,19 +1471,19 @@ export function LandingPage() {
           </section>
 
           {/* ------------------------------ Workflow ------------------------------ */}
-          <section id="workflow" className="max-w-6xl mx-auto px-6 pb-24">
-            <div className="glass rounded-2xl p-6 md:p-10">
-              <div className="grid grid-cols-1 lg:grid-cols-12 gap-10">
+          <section id="workflow" className="max-w-6xl mx-auto px-4 sm:px-6 pb-16 sm:pb-24">
+            <div className="glass rounded-2xl p-5 sm:p-6 md:p-10">
+              <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 lg:gap-10">
                 <div className="lg:col-span-4 reveal">
                   <Kicker n="03">How it works</Kicker>
-                  <h2 className="f-serif text-3xl md:text-4xl text-[#14261B] leading-tight lg:sticky lg:top-28" style={{ textWrap: 'balance' } as CSSProperties}>
+                  <h2 className="f-serif text-2xl sm:text-3xl md:text-4xl text-[#14261B] leading-tight lg:sticky lg:top-28" style={{ textWrap: 'balance' } as CSSProperties}>
                     From farm coordinates to a rotation you can explain
                   </h2>
                 </div>
                 <ol className="lg:col-span-8 divide-y divide-[#1F3D2B]/15">
                   {STEPS.map((s, i) => (
-                    <li key={s.title} className="reveal grid grid-cols-[3.5rem_1fr] gap-4 py-6 first:pt-0 last:pb-0" style={cv({ '--d': `${i * 90}ms` })}>
-                      <span className="f-serif text-5xl text-[#E8A317] leading-none num">{i + 1}</span>
+                    <li key={s.title} className="reveal grid grid-cols-[2.75rem_1fr] sm:grid-cols-[3.5rem_1fr] gap-4 py-6 first:pt-0 last:pb-0" style={cv({ '--d': `${i * 90}ms` })}>
+                      <span className="f-serif text-4xl sm:text-5xl text-[#E8A317] leading-none num">{i + 1}</span>
                       <div>
                         <h3 className="f-serif text-xl text-[#14261B] mb-1.5">{s.title}</h3>
                         <p className="text-[#2F4A3A] leading-relaxed text-[15px]">{s.desc}</p>
@@ -1023,16 +1496,16 @@ export function LandingPage() {
           </section>
 
           {/* ------------------------------ Rotations ------------------------------ */}
-          <section id="rotations" className="max-w-6xl mx-auto px-6 pb-24">
-            <div className="paper rounded-lg p-6 md:p-10">
+          <section id="rotations" className="max-w-6xl mx-auto px-4 sm:px-6 pb-16 sm:pb-24">
+            <div className="paper rounded-lg p-5 sm:p-6 md:p-10">
               <div className="flex flex-col md:flex-row md:items-end justify-between gap-4 mb-10 reveal">
                 <div className="md:max-w-2xl">
                   <Kicker n="04">Rotation model · illustrative Barabanki benchmark</Kicker>
-                  <h2 className="f-serif text-3xl md:text-4xl text-[#14261B] leading-tight" style={{ textWrap: 'balance' } as CSSProperties}>
+                  <h2 className="f-serif text-2xl sm:text-3xl md:text-4xl text-[#14261B] leading-tight" style={{ textWrap: 'balance' } as CSSProperties}>
                     Three ways to run the same field
                   </h2>
                 </div>
-                <button type="button" onClick={handleExploreFarm} className="u-link inline-flex items-center gap-2 text-sm font-semibold text-[#1F3D2B] whitespace-nowrap">
+                <button type="button" onClick={handleExploreFarm} className="u-link inline-flex items-center gap-2 text-sm font-semibold text-[#1F3D2B] self-start md:self-auto">
                   <span>Adjust weights in Rotation Planner</span>
                   <ArrowRight className="arrow w-4 h-4" />
                 </button>
@@ -1040,8 +1513,8 @@ export function LandingPage() {
 
               <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
                 {/* Explorer */}
-                <div className="lg:col-span-7 reveal">
-                  <div className="inline-flex border border-[#1F3D2B] rounded-md overflow-hidden mb-6" role="tablist" aria-label="Rotation strategy">
+                <div className="lg:col-span-7 reveal min-w-0">
+                  <div className="inline-flex max-w-full border border-[#1F3D2B] rounded-md overflow-hidden mb-6" role="tablist" aria-label="Rotation strategy">
                     {STRATEGIES.map((s, i) => (
                       <button
                         key={s.id}
@@ -1049,7 +1522,7 @@ export function LandingPage() {
                         role="tab"
                         aria-selected={strategyIdx === i}
                         onClick={() => setStrategyIdx(i)}
-                        className="seg px-4 py-2 text-sm font-semibold border-r border-[#1F3D2B] last:border-r-0"
+                        className="seg px-3 sm:px-4 py-2 text-sm font-semibold border-r border-[#1F3D2B] last:border-r-0"
                         style={{ background: strategyIdx === i ? '#1F3D2B' : 'transparent', color: strategyIdx === i ? '#FBF7EC' : '#1F3D2B' }}
                       >
                         Strategy {s.id}
@@ -1062,7 +1535,7 @@ export function LandingPage() {
                   <p className="text-[#2F4A3A] mb-6 leading-loose">
                     {strategy.seq.map((s, i) => (
                       <span key={`${strategy.id}-${s.crop}`}>
-                        <span className="font-semibold text-[#14261B]">{s.crop}</span>{' '}
+                        <span className="font-semibold text-[#14261B]">{s.crop}</span>{' '}<span className="f-deva text-xs text-[#55634F]">{CROP_HI[s.crop]}</span>{' '}
                         <span className="text-sm text-[#55634F]">({SEASONS[s.season].name})</span>
                         {i < strategy.seq.length - 1 && <span className="mx-2 text-[#B5482A]">→</span>}
                       </span>
@@ -1097,7 +1570,7 @@ export function LandingPage() {
                 </div>
 
                 {/* What-if */}
-                <div className="lg:col-span-5 reveal bg-white/70 border border-[#E6DCC2] rounded-lg p-5 md:p-6 relative" style={cv({ '--d': '120ms' })}>
+                <div className="lg:col-span-5 reveal glass-soft rounded-lg p-5 md:p-6 relative min-w-0" style={cv({ '--d': '120ms' })}>
                   <h3 className="f-serif text-xl text-[#14261B] mb-1">What if the rain falls short?</h3>
                   <p className="text-sm text-[#55634F] mb-6">Irrigation each rotation would have to make up.</p>
 
@@ -1151,7 +1624,7 @@ export function LandingPage() {
 
               {/* Full table */}
               <div className="mt-12 overflow-x-auto reveal">
-                <table className="w-full text-left border-collapse text-sm">
+                <table className="w-full text-left border-collapse text-sm min-w-[760px]">
                   <thead>
                     <tr className="text-[11px] uppercase tracking-[0.12em] text-[#55634F] border-b-2 border-[#1F3D2B]">
                       <th className="py-2.5 pr-4 font-semibold">Strategy</th>
@@ -1190,18 +1663,20 @@ export function LandingPage() {
           </section>
 
           {/* ------------------------------ Transparency ------------------------------ */}
-          <section id="transparency" className="max-w-6xl mx-auto px-6 pb-24">
-            <div className="glass rounded-2xl p-6 md:p-10">
-              <div className="grid grid-cols-1 lg:grid-cols-12 gap-10">
+          <section id="transparency" className="max-w-6xl mx-auto px-4 sm:px-6 pb-16 sm:pb-24">
+            <div className="glass rounded-2xl p-5 sm:p-6 md:p-10">
+              <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 lg:gap-10">
                 <div className="lg:col-span-5 reveal">
-                  <div className="relative max-w-sm mx-auto lg:mx-0" style={{ transform: 'rotate(-1.4deg)' }}>
+                  <div className="relative max-w-[17rem] sm:max-w-sm mx-auto lg:mx-0" style={{ transform: 'rotate(-1.4deg)' }}>
                     <span className="tape -top-3 left-1/2 -translate-x-1/2" style={{ transform: 'translateX(-50%) rotate(2deg)' }} />
-                    <div className="print bg-white p-3 pb-12">
+                    <div className="print bg-white p-3 pb-12 relative">
                       <div className="aspect-[4/5] overflow-hidden">
                         <img
                           src="/src/assets/images/soil_health_field_1794669906877.jpg"
                           alt="Healthy agricultural soil with young chickpea and wheat seedlings"
                           referrerPolicy="no-referrer"
+                          loading="lazy"
+                          decoding="async"
                           className="w-full h-full object-cover"
                         />
                       </div>
@@ -1210,9 +1685,9 @@ export function LandingPage() {
                   </div>
                 </div>
 
-                <div className="lg:col-span-7 reveal" style={cv({ '--d': '100ms' })}>
+                <div className="lg:col-span-7 reveal min-w-0" style={cv({ '--d': '100ms' })}>
                   <Kicker n="05">Scientific transparency &amp; limitations</Kicker>
-                  <h2 className="f-serif text-3xl md:text-4xl text-[#14261B] leading-tight mb-5" style={{ textWrap: 'balance' } as CSSProperties}>
+                  <h2 className="f-serif text-2xl sm:text-3xl md:text-4xl text-[#14261B] leading-tight mb-5" style={{ textWrap: 'balance' } as CSSProperties}>
                     Decision support, never unverified claims
                   </h2>
                   <p className="text-[#24392C] leading-relaxed mb-5">
@@ -1233,7 +1708,7 @@ export function LandingPage() {
                     </p>
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-2.5 mb-5">
                       {CHECKS.map((c) => (
-                        <label key={c.id} className="flex items-center gap-2.5 text-sm text-[#1B2A20] cursor-pointer select-none">
+                        <label key={c.id} className="flex items-center gap-2.5 text-sm text-[#1B2A20] cursor-pointer select-none py-0.5">
                           <input
                             type="checkbox"
                             checked={checks[c.id]}
@@ -1262,10 +1737,10 @@ export function LandingPage() {
           </section>
 
           {/* ---------------------------------- CTA ---------------------------------- */}
-          <section className="max-w-6xl mx-auto px-6 pb-44">
-            <div className="glass rounded-2xl px-6 py-10 md:px-12 grid grid-cols-1 md:grid-cols-12 gap-8 items-center reveal">
+          <section className="max-w-6xl mx-auto px-4 sm:px-6 pb-32 sm:pb-44">
+            <div className="glass rounded-2xl px-5 py-8 sm:px-6 sm:py-10 md:px-12 grid grid-cols-1 md:grid-cols-12 gap-8 items-center reveal">
               <div className="md:col-span-8">
-                <h2 className="f-serif text-3xl md:text-4xl text-[#14261B] leading-tight mb-3" style={{ textWrap: 'balance' } as CSSProperties}>
+                <h2 className="f-serif text-2xl sm:text-3xl md:text-4xl text-[#14261B] leading-tight mb-3" style={{ textWrap: 'balance' } as CSSProperties}>
                   Walk one parcel through the whole cropping year
                 </h2>
                 <p className="text-[#24392C] max-w-xl">
@@ -1273,8 +1748,9 @@ export function LandingPage() {
                 </p>
               </div>
               <div className="md:col-span-4 flex flex-col items-start md:items-end gap-3">
+                <Tractor className="w-36 sm:w-44 -mb-1" />
                 <button type="button" onClick={handleExploreFarm} className="btn-primary inline-flex items-center gap-2 px-6 py-3 text-sm font-semibold whitespace-nowrap">
-                  <span>Explore Your Farm</span>
+                  <span>{t.cta1}</span>
                   <ArrowRight className="arrow w-4 h-4" />
                 </button>
                 <span className="f-hand text-xl text-[#B5482A]">no sign-up needed for the demo</span>
@@ -1284,8 +1760,9 @@ export function LandingPage() {
         </main>
 
         {/* ------------------------------ Footer ------------------------------ */}
-        <footer className="bg-[#17301F] text-[#E9E3CE] relative">
-          <div className="max-w-6xl mx-auto px-6 py-12 grid grid-cols-1 md:grid-cols-12 gap-8 text-sm">
+        <footer className="bg-[#17301F]/80 backdrop-blur-xl text-[#E9E3CE] relative border-t border-white/15">
+          <div className="motif pt-0" aria-hidden="true" />
+          <div className="max-w-6xl mx-auto px-4 sm:px-6 py-12 grid grid-cols-1 md:grid-cols-12 gap-8 text-sm">
             <div className="md:col-span-5">
               <div className="flex items-center gap-2 text-[#E8C46A] mb-3">
                 <Sprout className="w-6 h-6" />
@@ -1298,7 +1775,7 @@ export function LandingPage() {
             <div className="md:col-span-3">
               <div className="text-[11px] uppercase tracking-[0.14em] text-[#8FA08F] mb-3">On this page</div>
               <ul className="space-y-2">
-                {[['Seasons', '#seasons'], ['NASA Data', '#datasets'], ['How It Works', '#workflow'], ['Rotation Model', '#rotations'], ['Transparency', '#transparency']].map(([l, h]) => (
+                {navLinks.map(([l, h]) => (
                   <li key={h}><a href={h} className="u-link hover:text-white">{l}</a></li>
                 ))}
               </ul>
@@ -1307,12 +1784,19 @@ export function LandingPage() {
               <div className="text-[11px] uppercase tracking-[0.14em] text-[#8FA08F] mb-3">Credits</div>
               <p className="text-[#B9C2B0] leading-relaxed">
                 Climate data sourced from NASA POWER (Langley Research Center). Agronomic baselines from ICAR &amp; FAO CropWat.
+                Place names from OpenStreetMap Nominatim.
               </p>
             </div>
           </div>
           <div className="border-t border-white/10">
-            <div className="max-w-6xl mx-auto px-6 py-4 text-xs text-[#8FA08F]">
-              NASA Space Apps Challenge 2026 (Field Shift)
+            <div className="max-w-6xl mx-auto px-4 sm:px-6 py-4 text-xs text-[#8FA08F]">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <span>NASA Space Apps Challenge 2026 (Field Shift)</span>
+                <span className="inline-flex items-center gap-2 f-deva text-[#E8C46A] text-sm">
+                  <span className="tricolour" aria-hidden="true"><i /><i /><i /></span>
+                  जय जवान, जय किसान
+                </span>
+              </div>
             </div>
           </div>
         </footer>
