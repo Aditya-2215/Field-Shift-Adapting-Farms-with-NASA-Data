@@ -1,11 +1,9 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
 import { ArrowRight, CloudRain, FileCheck2, FlaskConical, Landmark, LocateFixed, MapPin, Phone, RefreshCw, Smartphone, Wheat } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
-import { DEMO_FARM } from '../../shared/data/demoFarm';
 import { useAuth } from '../contexts/AuthContext';
-import { FarmLeafletMap } from '../components/maps/FarmLeafletMap';
 import { AuthModal } from '../components/auth/AuthModal';
 
 /* -------------------------------------------------------------------------- */
@@ -18,6 +16,8 @@ const seeded = (n: number) => {
   const x = Math.sin(n * 127.1 + 311.7) * 43758.5453;
   return x - Math.floor(x);
 };
+
+const balance = { textWrap: 'balance' } as CSSProperties;
 
 /* -------------------------------------------------------------------------- */
 /*  Live location (browser geolocation + OpenStreetMap reverse geocoding)      */
@@ -114,7 +114,6 @@ function useUserLocation(): UserLocation {
           setState({ status: 'ready', ...done });
         } catch {
           if (cancelled) return;
-          // Coordinates are still valid even if the place name could not be fetched.
           setState({ status: 'ready', ...base });
         }
       },
@@ -136,13 +135,13 @@ function useUserLocation(): UserLocation {
 
 const fmtCoord = (v: number, pos: string, neg: string) => `${Math.abs(v).toFixed(4)}° ${v >= 0 ? pos : neg}`;
 
-function LocationCard({ className = '', title = 'Your location' }: { className?: string; title?: string }) {
-  const { status, lat, lon, accuracyM, placeName, retry } = useUserLocation();
+function LocationCard({ loc, className = '', title = 'Your location' }: { loc: UserLocation; className?: string; title?: string }) {
+  const { status, lat, lon, accuracyM, placeName, retry } = loc;
   const busy = status === 'locating' || status === 'naming' || status === 'idle';
   const hasFix = lat !== null && lon !== null;
 
   return (
-    <div className={`glass loc-card rounded-xl px-4 py-3.5 ${className}`} role="status" aria-live="polite">
+    <div className={`glass loc-card rounded-2xl px-4 py-3.5 ${className}`} role="status" aria-live="polite">
       <div className="flex items-start gap-3">
         <span className={`loc-pin ${busy ? 'is-busy' : ''}`} aria-hidden="true">
           {hasFix ? <MapPin className="w-4 h-4" /> : <LocateFixed className="w-4 h-4" />}
@@ -151,16 +150,10 @@ function LocationCard({ className = '', title = 'Your location' }: { className?:
         <div className="min-w-0 flex-1">
           <p className="text-xs font-semibold text-[#2F4A3A]">{title}</p>
 
-          {busy && !hasFix && (
-            <p className="text-sm text-[#24392C] mt-0.5">Finding you… allow location access if your browser asks.</p>
-          )}
-          {status === 'denied' && (
-            <p className="text-sm text-[#24392C] mt-0.5">Location is blocked. Allow it in your browser’s site settings, then try again.</p>
-          )}
+          {busy && !hasFix && <p className="text-sm text-[#24392C] mt-0.5">Finding you… allow location access if your browser asks.</p>}
+          {status === 'denied' && <p className="text-sm text-[#24392C] mt-0.5">Location is blocked. Allow it in your browser’s site settings, then try again.</p>}
           {status === 'unavailable' && <p className="text-sm text-[#24392C] mt-0.5">This browser can’t share a location.</p>}
-          {status === 'error' && (
-            <p className="text-sm text-[#24392C] mt-0.5">Couldn’t get a position fix. Check your connection and try again.</p>
-          )}
+          {status === 'error' && <p className="text-sm text-[#24392C] mt-0.5">Couldn’t get a position fix. Check your connection and try again.</p>}
 
           {hasFix && (
             <>
@@ -170,10 +163,7 @@ function LocationCard({ className = '', title = 'Your location' }: { className?:
               <p className="text-xs text-[#2F4A3A] num mt-1">
                 {fmtCoord(lat!, 'N', 'S')} · {fmtCoord(lon!, 'E', 'W')}
                 {accuracyM !== null && (
-                  <span className="text-[#55634F]">
-                    {' '}
-                    · ±{accuracyM >= 1000 ? `${(accuracyM / 1000).toFixed(1)} km` : `${accuracyM} m`}
-                  </span>
+                  <span className="text-[#55634F]"> · ±{accuracyM >= 1000 ? `${(accuracyM / 1000).toFixed(1)} km` : `${accuracyM} m`}</span>
                 )}
               </p>
             </>
@@ -190,39 +180,48 @@ function LocationCard({ className = '', title = 'Your location' }: { className?:
   );
 }
 
+/** Real OpenStreetMap embed centred on the visitor. No placeholder coordinates. */
+function LiveMap({ loc }: { loc: UserLocation }) {
+  const { lat, lon, status } = loc;
+  if (lat === null || lon === null) {
+    return (
+      <div className="map-empty grid place-items-center text-center px-6">
+        <div>
+          <span className="loc-pin mx-auto mb-3" aria-hidden="true"><LocateFixed className="w-4 h-4" /></span>
+          <p className="f-serif text-lg text-[#14261B]">Your map appears here</p>
+          <p className="text-sm text-[#44544A] mt-1 max-w-xs mx-auto">
+            {status === 'denied'
+              ? 'Location is blocked. Allow it in your browser, then refresh your location.'
+              : 'Allow location access and we will centre the map on where you are standing.'}
+          </p>
+        </div>
+      </div>
+    );
+  }
+  const d = 0.012;
+  const bbox = `${lon - d},${lat - d},${lon + d},${lat + d}`;
+  const src = `https://www.openstreetmap.org/export/embed.html?bbox=${bbox}&layer=mapnik&marker=${lat},${lon}`;
+  return <iframe title="Map centred on your location" src={src} loading="lazy" className="w-full h-full border-0" referrerPolicy="no-referrer" />;
+}
+
 /* -------------------------------------------------------------------------- */
 /*  Data                                                                       */
 /* -------------------------------------------------------------------------- */
 type SeasonKey = 'kharif' | 'rabi' | 'zaid';
 
-const SEASONS: Record<
-  SeasonKey,
-  { name: string; deva: string; window: string; months: number; crops: string[]; note: string; color: string }
-> = {
+const SEASONS: Record<SeasonKey, { name: string; deva: string; window: string; months: number; crops: string[]; note: string; color: string }> = {
   kharif: {
-    name: 'Kharif',
-    deva: 'खरीफ',
-    window: 'June to October',
-    months: 5,
-    crops: ['Rice', 'Maize'],
+    name: 'Kharif', deva: 'खरीफ', window: 'June to October', months: 5, crops: ['Rice', 'Maize'],
     note: 'Sown with the monsoon. What matters most is how much rain actually arrives, and whether the field drains when it does.',
     color: '#5E9C5A',
   },
   rabi: {
-    name: 'Rabi',
-    deva: 'रबी',
-    window: 'November to March',
-    months: 5,
-    crops: ['Wheat', 'Chickpea', 'Mustard'],
+    name: 'Rabi', deva: 'रबी', window: 'November to March', months: 5, crops: ['Wheat', 'Chickpea', 'Mustard'],
     note: 'The cool-season crops. They live off moisture left in the soil plus whatever irrigation you can spare.',
     color: '#D9A441',
   },
   zaid: {
-    name: 'Zaid',
-    deva: 'जायद',
-    window: 'April to May',
-    months: 2,
-    crops: ['Green Gram', 'Black Gram'],
+    name: 'Zaid', deva: 'जायद', window: 'April to May', months: 2, crops: ['Green Gram', 'Black Gram'],
     note: 'A short, hot gap between Rabi harvest and the next monsoon. Heat stress and a quick turnaround decide what fits.',
     color: '#CF7A3E',
   },
@@ -249,6 +248,10 @@ const DATASETS = [
   { id: 'SRTM', name: 'SRTM', res: 30, grid: '30 m', gives: 'Elevation and slope', access: 'Adapter' },
 ] as const;
 
+const LEGUMES = new Set(['Chickpea', 'Green Gram', 'Black Gram']);
+const CEREALS = new Set(['Rice', 'Maize', 'Wheat']);
+
+/** Rotations are described by structure only. Every figure shown is derived from these sequences. */
 const STRATEGIES = [
   {
     id: 'A',
@@ -257,10 +260,7 @@ const STRATEGIES = [
       { crop: 'Rice', season: 'kharif' as SeasonKey },
       { crop: 'Wheat', season: 'rabi' as SeasonKey },
     ],
-    water: 1650,
-    n: -240,
-    nTone: '#B5482A',
-    tradeoff: 'High irrigation draw & cereal nitrogen depletion; strong MSP access.',
+    tradeoff: 'Two cereals back to back. Familiar to most farmers, but heavy on irrigation and on the nitrogen the soil has to supply.',
   },
   {
     id: 'B',
@@ -270,10 +270,7 @@ const STRATEGIES = [
       { crop: 'Chickpea', season: 'rabi' as SeasonKey },
       { crop: 'Green Gram', season: 'zaid' as SeasonKey },
     ],
-    water: 1760,
-    n: -60,
-    nTone: '#3F7D4C',
-    tradeoff: 'Rebuilds N & organic matter via 2 legume phases; tighter turnaround.',
+    tradeoff: 'Two legume phases put nitrogen and organic matter back, but the turnaround between seasons is tight.',
   },
   {
     id: 'C',
@@ -283,15 +280,17 @@ const STRATEGIES = [
       { crop: 'Mustard', season: 'rabi' as SeasonKey },
       { crop: 'Black Gram', season: 'zaid' as SeasonKey },
     ],
-    water: 1110,
-    n: -163,
-    nTone: '#C7881C',
-    tradeoff: 'Saves ~33% water vs flooded paddy; requires well-drained Kharif soil.',
+    tradeoff: 'Maize replaces flooded paddy to ease water demand, and it needs well-drained Kharif soil to do well.',
   },
 ];
 
-// Illustrative assumption for the landing-page slider only
-const ASSUMED_EFFECTIVE_RAIN_MM = 620;
+const structureOf = (s: (typeof STRATEGIES)[number]) => ({
+  crops: s.seq.length,
+  legumes: s.seq.filter((x) => LEGUMES.has(x.crop)).length,
+  cereals: s.seq.filter((x) => CEREALS.has(x.crop)).length,
+  cover: s.seq.reduce((m, x) => m + SEASONS[x.season].months, 0),
+  paddy: s.seq.some((x) => x.crop === 'Rice'),
+});
 
 const CHECKS = [
   { id: 'boundary', label: 'Farm boundary (GeoJSON)', weight: 20 },
@@ -312,13 +311,7 @@ const STEPS = [
 const NAV_IDS = ['#seasons', '#farmers', '#datasets', '#workflow', '#rotations', '#transparency'];
 
 const CROP_HI: Record<string, string> = {
-  Rice: 'धान',
-  Maize: 'मक्का',
-  Wheat: 'गेहूँ',
-  Chickpea: 'चना',
-  Mustard: 'सरसों',
-  'Green Gram': 'मूँग',
-  'Black Gram': 'उड़द',
+  Rice: 'धान', Maize: 'मक्का', Wheat: 'गेहूँ', Chickpea: 'चना', Mustard: 'सरसों', 'Green Gram': 'मूँग', 'Black Gram': 'उड़द',
 };
 
 const I18N = {
@@ -328,7 +321,7 @@ const I18N = {
     h1a: 'Read your farm the way satellites do, then',
     h1b: 'decide what to plant',
     h1c: 'next.',
-    sub: 'AgriShift pulls NASA Earth observations for your parcel, sets them beside your soil results, and lays crop rotations out side by side, so you can see what each one costs in water and nitrogen before the season starts.',
+    sub: 'AgriShift pulls NASA Earth observations for your parcel, sets them beside your soil results, and lays crop rotations out side by side, so you can see what each one asks of your water and your soil before the season starts.',
     cta1: 'Explore Your Farm',
     cta2: 'See what data it reads',
     fKicker: 'Made for Indian farms',
@@ -344,7 +337,7 @@ const I18N = {
     h1a: 'अपने खेत को उपग्रह की नज़र से पढ़ें, और',
     h1b: 'तय करें आगे क्या बोना है।',
     h1c: '',
-    sub: 'AgriShift आपके खेत के लिए NASA के उपग्रह आँकड़े लाता है, उन्हें आपकी मिट्टी की जाँच के साथ रखता है और फसल चक्र आमने-सामने दिखाता है, ताकि सीज़न शुरू होने से पहले आप जान सकें कि हर विकल्प में कितना पानी और नाइट्रोजन लगेगा।',
+    sub: 'AgriShift आपके खेत के लिए NASA के उपग्रह आँकड़े लाता है, उन्हें आपकी मिट्टी की जाँच के साथ रखता है और फसल चक्र आमने-सामने दिखाता है, ताकि सीज़न शुरू होने से पहले आप जान सकें कि हर विकल्प आपके पानी और मिट्टी से क्या माँगता है।',
     cta1: 'अपना खेत देखें',
     cta2: 'कौन-सा डेटा पढ़ता है',
     fKicker: 'भारतीय खेतों के लिए',
@@ -409,30 +402,25 @@ const STYLES = `
 @property --stem-b  { syntax: '<color>'; inherits: true; initial-value: #7DAF5C; }
 @property --grain   { syntax: '<color>'; inherits: true; initial-value: #7FB04A; }
 @property --grain-b { syntax: '<color>'; inherits: true; initial-value: #A5CB6B; }
+@property --spin { syntax: '<angle>'; inherits: false; initial-value: 0deg; }
 
-html { scroll-behavior: smooth; scroll-padding-top: 5rem; -webkit-text-size-adjust: 100%; text-size-adjust: 100%; overscroll-behavior-y: none; }
+/* Fluid root size: comfortable on phones, generous on wide monitors */
+html { font-size: clamp(15px, 0.32vw + 13.6px, 19px); scroll-behavior: smooth; scroll-padding-top: 6rem; -webkit-text-size-adjust: 100%; text-size-adjust: 100%; overscroll-behavior-y: none; }
 body { margin: 0; -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; text-rendering: optimizeLegibility; }
 
 .scene {
-  --forest: #1F3D2B;
-  --forest-2: #2E5A3F;
-  --paper: #FBF7EC;
-  --edge: #E6DCC2;
-  --ink: #1B2A20;
-  --muted: #55634F;
-  --marigold: #E8A317;
-  --clay: #B5482A;
-  --ease: cubic-bezier(.22,1,.36,1);
+  --forest: #1F3D2B; --forest-2: #2E5A3F; --paper: #FBF7EC; --edge: #E6DCC2; --ink: #1B2A20; --muted: #55634F;
+  --marigold: #E8A317; --clay: #B5482A; --ease: cubic-bezier(.22,1,.36,1);
   font-family: 'Public Sans', 'Noto Sans Devanagari', system-ui, sans-serif;
   color: var(--ink);
-  min-height: 100vh;
-  min-height: 100dvh;
-  width: 100%;
+  min-height: 100vh; min-height: 100dvh; width: 100%;
   transition: --hillA 2s ease, --hillB 2s ease, --hillC 2s ease, --plane1 2s ease,
               --cloud 2s ease, --stem 2s ease, --stem-b 2s ease, --grain 2s ease, --grain-b 2s ease;
 }
 .scene img { max-width: 100%; }
-/* Season palettes: hills, ground, vegetation and clouds all ease between these. */
+.wrap { width: 100%; max-width: 1560px; margin-inline: auto; padding-inline: clamp(1rem, 3.2vw, 3rem); }
+.sec  { padding-bottom: clamp(3rem, 8vw, 7rem); }
+
 .scene[data-season='kharif'] { --hillA: #4E8F5A; --hillB: #3F7D4C; --hillC: #5B9A52; --plane1: #4C9A4F; --cloud: #EEF3F6; --stem: #4F8A3A; --stem-b: #7DAF5C; --grain: #7FB04A; --grain-b: #A5CB6B; --stalk-h: .78; --stalk-o: .95; }
 .scene[data-season='rabi']   { --hillA: #6A9A55; --hillB: #8AA94A; --hillC: #B7B54A; --plane1: #98A843; --cloud: #FFFFFF; --stem: #5A7D2E; --stem-b: #86A455; --grain: #D9A532; --grain-b: #E8C46A; --stalk-h: 1; --stalk-o: 1; }
 .scene[data-season='zaid']   { --hillA: #A99A47; --hillB: #C2A245; --hillC: #D6AE4F; --plane1: #C69A38; --cloud: #FFF3D6; --stem: #8A8440; --stem-b: #B4A867; --grain: #C9A86A; --grain-b: #DCC694; --stalk-h: .6; --stalk-o: .8; }
@@ -442,74 +430,89 @@ body { margin: 0; -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: 
 .f-deva  { font-family: 'Noto Sans Devanagari', sans-serif; font-weight: 600; }
 .num     { font-variant-numeric: tabular-nums; }
 
-/* ---------- Scroll progress ---------- */
 .progress { position: fixed; top: 0; left: 0; right: 0; height: 3px; z-index: 60; pointer-events: none;
   background: linear-gradient(90deg, var(--marigold), #F3C85B); transform-origin: 0 50%;
   transform: scaleX(var(--progress, 0)); will-change: transform; }
 
-/* ---------- Surfaces ---------- */
-.glass {
+/* ---------- Liquid glass surfaces ---------- */
+.glass, .glass-soft, .glass-dark, .paper {
+  --mx: 50%; --my: 0%;
   position: relative; isolation: isolate;
-  background: linear-gradient(145deg, rgba(255,255,255,0.58), rgba(255,255,255,0.24));
-  backdrop-filter: blur(24px) saturate(190%);
-  -webkit-backdrop-filter: blur(24px) saturate(190%);
-  border: 1px solid rgba(255,255,255,0.7);
-  box-shadow: 0 20px 46px -22px rgba(20,45,28,0.55), inset 0 1px 0 rgba(255,255,255,0.9), inset 0 -1px 0 rgba(255,255,255,0.22);
-  transition: box-shadow .5s var(--ease), background .5s ease;
+}
+.glass {
+  background: linear-gradient(145deg, rgba(255,255,255,0.6), rgba(255,255,255,0.22));
+  backdrop-filter: blur(26px) saturate(200%) brightness(1.04);
+  -webkit-backdrop-filter: blur(26px) saturate(200%) brightness(1.04);
+  border: 1px solid rgba(255,255,255,0.72);
+  box-shadow: 0 24px 54px -24px rgba(20,45,28,0.55), inset 0 1.5px 0 rgba(255,255,255,0.95), inset 0 -1px 0 rgba(255,255,255,0.25), inset 0 0 40px rgba(255,255,255,0.08);
+  transition: box-shadow .5s var(--ease), background .5s ease, transform .6s var(--ease);
 }
 .glass::before {
   content: ''; position: absolute; inset: 0; border-radius: inherit; z-index: -1; pointer-events: none;
   background: radial-gradient(120% 80% at 0% 0%, rgba(255,255,255,0.55), rgba(255,255,255,0) 55%),
-              linear-gradient(315deg, rgba(255,255,255,0.16), rgba(255,255,255,0) 40%);
+              linear-gradient(315deg, rgba(255,255,255,0.18), rgba(255,255,255,0) 40%);
 }
+/* cursor-following specular light, set by one delegated pointer listener */
+.glass::after, .glass-soft::after, .glass-dark::after, .paper::after {
+  content: ''; position: absolute; inset: 0; border-radius: inherit; pointer-events: none; z-index: 0; opacity: 0;
+  background: radial-gradient(420px circle at var(--mx) var(--my), rgba(255,255,255,0.5), rgba(255,255,255,0) 60%);
+  mix-blend-mode: soft-light; transition: opacity .5s ease;
+}
+.glass:hover::after, .glass-soft:hover::after, .glass-dark:hover::after, .paper:hover::after { opacity: 1; }
+.glass > *, .glass-soft > *, .glass-dark > *, .paper > * { position: relative; z-index: 1; }
+
 .glass-soft {
-  background: rgba(255,255,255,0.42);
-  backdrop-filter: blur(18px) saturate(170%);
-  -webkit-backdrop-filter: blur(18px) saturate(170%);
-  border: 1px solid rgba(255,255,255,0.72);
-  box-shadow: inset 0 1px 0 rgba(255,255,255,0.9), 0 14px 30px -20px rgba(20,45,28,0.5);
+  background: linear-gradient(150deg, rgba(255,255,255,0.5), rgba(255,255,255,0.3));
+  backdrop-filter: blur(20px) saturate(180%);
+  -webkit-backdrop-filter: blur(20px) saturate(180%);
+  border: 1px solid rgba(255,255,255,0.75);
+  box-shadow: inset 0 1.5px 0 rgba(255,255,255,0.95), 0 16px 34px -20px rgba(20,45,28,0.5);
+  transition: box-shadow .5s var(--ease), background .4s ease, transform .6s var(--ease);
 }
 .glass-dark {
-  position: relative; isolation: isolate;
-  background: linear-gradient(150deg, rgba(31,61,43,0.8), rgba(16,38,26,0.62));
-  backdrop-filter: blur(22px) saturate(170%);
-  -webkit-backdrop-filter: blur(22px) saturate(170%);
-  border: 1px solid rgba(255,255,255,0.22);
-  box-shadow: 0 26px 46px -24px rgba(8,28,16,0.85), inset 0 1px 0 rgba(255,255,255,0.28);
+  background: linear-gradient(150deg, rgba(31,61,43,0.82), rgba(16,38,26,0.64));
+  backdrop-filter: blur(24px) saturate(180%);
+  -webkit-backdrop-filter: blur(24px) saturate(180%);
+  border: 1px solid rgba(255,255,255,0.24);
+  box-shadow: 0 28px 50px -24px rgba(8,28,16,0.85), inset 0 1.5px 0 rgba(255,255,255,0.3);
 }
 .glass-bar {
-  background: rgba(251,247,236,0.5);
-  backdrop-filter: blur(24px) saturate(190%);
-  -webkit-backdrop-filter: blur(24px) saturate(190%);
-  border-bottom: 1px solid rgba(255,255,255,0.7);
+  background: rgba(251,247,236,0.46);
+  backdrop-filter: blur(26px) saturate(200%);
+  -webkit-backdrop-filter: blur(26px) saturate(200%);
+  border-bottom: 1px solid rgba(255,255,255,0.75);
   padding-top: env(safe-area-inset-top, 0px);
   transition: box-shadow .4s ease, background-color .4s ease;
 }
-.scene[data-scrolled] .glass-bar { background: rgba(251,247,236,0.82); box-shadow: 0 10px 28px -20px rgba(20,40,25,0.6); }
-.glass-cap {
-  background: rgba(20,40,28,0.55);
-  backdrop-filter: blur(10px);
-  -webkit-backdrop-filter: blur(10px);
-  border: 1px solid rgba(255,255,255,0.2);
-}
+.scene[data-scrolled] .glass-bar { background: rgba(251,247,236,0.8); box-shadow: 0 12px 30px -20px rgba(20,40,25,0.6); }
+.glass-cap { background: rgba(20,40,28,0.55); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); border: 1px solid rgba(255,255,255,0.2); }
 .paper {
-  background-color: rgba(251,247,236,0.56);
+  background-color: rgba(251,247,236,0.58);
   background-image: ${GRAIN};
-  backdrop-filter: blur(22px) saturate(175%);
-  -webkit-backdrop-filter: blur(22px) saturate(175%);
-  border: 1px solid rgba(255,255,255,0.72);
-  box-shadow: 0 1px 0 rgba(255,255,255,0.9) inset, 0 26px 50px -26px rgba(50,40,20,0.55);
+  backdrop-filter: blur(24px) saturate(180%);
+  -webkit-backdrop-filter: blur(24px) saturate(180%);
+  border: 1px solid rgba(255,255,255,0.74);
+  box-shadow: 0 1px 0 rgba(255,255,255,0.95) inset, 0 28px 54px -26px rgba(50,40,20,0.55);
 }
+/* animated liquid rim on the big hero cards */
+.rim::before { /* sits behind content, above background */ }
+.rim { --spin: 0deg; }
+.rim > .rim-line { position: absolute; inset: -1px; border-radius: inherit; padding: 1.5px; pointer-events: none; z-index: 2;
+  background: conic-gradient(from var(--spin), rgba(255,255,255,0) 0deg, rgba(255,255,255,.95) 40deg, rgba(232,163,23,.7) 80deg, rgba(255,255,255,0) 140deg, rgba(255,255,255,0) 360deg);
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0); -webkit-mask-composite: xor;
+          mask: linear-gradient(#000 0 0) content-box exclude, linear-gradient(#000 0 0);
+  animation: spinRim 9s linear infinite; opacity: .85; }
+
 .rule { border-color: var(--edge); }
-.map-frame { border-radius: 10px; overflow: hidden; box-shadow: 0 18px 36px -22px rgba(20,40,25,.6); transition: box-shadow .5s ease, transform .5s ease; }
-.map-frame:hover { transform: translateY(-3px); box-shadow: 0 26px 44px -22px rgba(20,40,25,.65); }
+.map-frame { border-radius: 18px; overflow: hidden; box-shadow: 0 20px 40px -22px rgba(20,40,25,.6); transition: box-shadow .5s ease, transform .6s var(--ease); }
+.map-frame:hover { transform: translateY(-3px); box-shadow: 0 28px 48px -22px rgba(20,40,25,.65); }
+.map-box { height: clamp(280px, 42vh, 520px); border-radius: 12px; overflow: hidden; background: rgba(255,255,255,.45); }
+.map-empty { height: 100%; }
 
-/* ---------- Scene (all animated layers use opacity or transform) ---------- */
+/* ---------- Scene ---------- */
 .scene-sky, .scene-haze { position: fixed; inset: 0; z-index: 0; pointer-events: none; transition: opacity 2s ease; will-change: opacity; }
-
-.scene-sunwrap { position: fixed; top: 0; right: 0; width: 0; height: 0; z-index: 0; pointer-events: none;
-  transition: transform 2.4s cubic-bezier(.45,0,.2,1); will-change: transform; transform: translate3d(0,0,0); }
-.scene-sun { position: absolute; top: -50px; right: 9vw; width: 120px; height: 120px; border-radius: 50%; transition: opacity 2s ease; will-change: opacity; }
+.scene-sunwrap { position: fixed; top: 0; right: 0; width: 0; height: 0; z-index: 0; pointer-events: none; transition: transform 2.4s cubic-bezier(.45,0,.2,1); will-change: transform; transform: translate3d(0,0,0); }
+.scene-sun { position: absolute; top: -50px; right: 9vw; width: clamp(90px, 9vw, 160px); height: clamp(90px, 9vw, 160px); border-radius: 50%; transition: opacity 2s ease; will-change: opacity; }
 .scene[data-season='kharif'] .scene-sunwrap { transform: translate3d(-4vw, 30px, 0) scale(.9); }
 .scene[data-season='rabi']   .scene-sunwrap { transform: translate3d(-34vw, 150px, 0) scale(1.05); }
 .scene[data-season='zaid']   .scene-sunwrap { transform: translate3d(-14vw, 20px, 0) scale(1.3); }
@@ -517,89 +520,63 @@ body { margin: 0; -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: 
 .scene-cloud { position: fixed; left: 0; z-index: 0; pointer-events: none; animation: cloudFly linear infinite; transition: opacity 2s ease; will-change: transform, opacity; }
 .scene-hill { position: fixed; left: 0; right: 0; bottom: 0; width: 100%; z-index: 0; pointer-events: none;
   transform: translate3d(0, calc(var(--sy, 0) * var(--k, 0) * 1px), 0); will-change: transform; }
-.scene-plane {
-  position: fixed; left: -60%; right: -60%; bottom: -5vh; height: 52vh; z-index: 0; pointer-events: none;
+.scene-plane { position: fixed; left: -60%; right: -60%; bottom: -5vh; height: 52vh; z-index: 0; pointer-events: none;
   transform-origin: 50% 100%; transform: perspective(520px) rotateX(62deg);
-  background:
-    repeating-linear-gradient(90deg, rgba(20,60,30,0) 0 38px, rgba(20,60,30,0.2) 38px 44px),
-    linear-gradient(to top, var(--plane1), rgba(255,255,255,0) 85%);
-  -webkit-mask-image: linear-gradient(to top, #000 40%, transparent 100%);
-          mask-image: linear-gradient(to top, #000 40%, transparent 100%);
-}
+  background: repeating-linear-gradient(90deg, rgba(20,60,30,0) 0 38px, rgba(20,60,30,0.2) 38px 44px), linear-gradient(to top, var(--plane1), rgba(255,255,255,0) 85%);
+  -webkit-mask-image: linear-gradient(to top, #000 40%, transparent 100%); mask-image: linear-gradient(to top, #000 40%, transparent 100%); }
 .scene-rain { position: fixed; left: -10%; top: -20%; width: 120%; height: 140%; z-index: 0; pointer-events: none;
   background: repeating-linear-gradient(105deg, rgba(255,255,255,0) 0 22px, rgba(255,255,255,.9) 22px 23px, rgba(255,255,255,0) 23px 46px);
   transition: opacity 2s ease; animation: rainDrift 1.6s linear infinite; will-change: transform, opacity; }
 .scene-stalks { position: fixed; left: 0; right: 0; bottom: -6px; height: 140px; z-index: 0; pointer-events: none;
-  transform-origin: 50% 100%; transform: scaleY(var(--stalk-h, 1));
-  transition: transform 2s cubic-bezier(.45,0,.2,1), opacity 2s ease; will-change: transform; }
+  transform-origin: 50% 100%; transform: scaleY(var(--stalk-h, 1)); transition: transform 2s cubic-bezier(.45,0,.2,1), opacity 2s ease; will-change: transform; }
 .scene-stalks.back  { opacity: calc(var(--stalk-o, 1) * .55); }
 .scene-stalks.front { opacity: calc(var(--stalk-o, 1) * .9); }
 .stalk { position: absolute; bottom: 0; transform-origin: 50% 100%; animation: sway ease-in-out infinite; }
 
+/* floating liquid light blobs */
+.blob { position: fixed; z-index: 0; pointer-events: none; filter: blur(60px); opacity: .5; mix-blend-mode: soft-light; will-change: transform, border-radius;
+  animation: blobMorph 18s ease-in-out infinite, blobDrift 28s ease-in-out infinite; }
+.blob.b1 { width: 38vw; height: 38vw; left: -8vw; top: 12vh; background: radial-gradient(circle, #fff, rgba(255,255,255,0) 70%); }
+.blob.b2 { width: 32vw; height: 32vw; right: -6vw; top: 48vh; background: radial-gradient(circle, #FFE9A8, rgba(255,233,168,0) 70%); animation-delay: -7s, -11s; }
+
 /* ---------- Buttons ---------- */
 .btn-primary, .btn-ghost, .seg, .row-btn { touch-action: manipulation; -webkit-tap-highlight-color: transparent; }
-.btn-primary {
-  position: relative; overflow: hidden; isolation: isolate;
-  background: var(--forest); color: var(--paper); border-radius: 8px;
-  box-shadow: inset 0 1px 0 rgba(255,255,255,0.18), 0 10px 20px -10px rgba(20,50,30,0.8);
-  transition: transform .25s ease, box-shadow .25s ease, color .3s ease;
-}
-.btn-primary::before {
-  content: ''; position: absolute; inset: 0; z-index: -1; background: var(--marigold);
-  transform: scaleX(0); transform-origin: left; transition: transform .4s cubic-bezier(.65,0,.35,1);
-}
-.btn-primary:hover { transform: translateY(-2px); color: var(--ink); box-shadow: inset 0 1px 0 rgba(255,255,255,0.3), 0 14px 24px -10px rgba(20,50,30,0.8); }
-.btn-primary:hover::before { transform: scaleX(1); }
-.btn-primary:active { transform: translateY(0); }
-
-.btn-ghost {
-  position: relative; overflow: hidden; isolation: isolate;
-  border: 1.5px solid var(--forest); color: var(--forest); background: rgba(255,255,255,0.4); border-radius: 8px;
-  transition: transform .25s ease, color .3s ease;
-}
-.btn-ghost::before {
-  content: ''; position: absolute; inset: 0; z-index: -1; background: var(--forest);
-  transform: scaleX(0); transform-origin: left; transition: transform .4s cubic-bezier(.65,0,.35,1);
-}
+.btn-primary { position: relative; overflow: hidden; isolation: isolate; background: var(--forest); color: var(--paper); border-radius: 999px;
+  box-shadow: inset 0 1.5px 0 rgba(255,255,255,0.25), 0 12px 24px -10px rgba(20,50,30,0.85); transition: transform .3s var(--ease), box-shadow .3s ease, color .3s ease; }
+.btn-primary::before { content: ''; position: absolute; inset: 0; z-index: -1; background: var(--marigold); border-radius: 50%;
+  transform: translateY(101%) scale(1.4); transition: transform .55s cubic-bezier(.65,0,.35,1); }
+.btn-primary::after { content: ''; position: absolute; top: 0; left: -60%; width: 40%; height: 100%; z-index: 0; pointer-events: none;
+  background: linear-gradient(100deg, transparent, rgba(255,255,255,.35), transparent); transform: skewX(-18deg); transition: left .7s ease; }
+.btn-primary:hover { transform: translateY(-2px); color: var(--ink); box-shadow: inset 0 1.5px 0 rgba(255,255,255,0.4), 0 16px 28px -10px rgba(20,50,30,0.8); }
+.btn-primary:hover::before { transform: translateY(0) scale(1.4); }
+.btn-primary:hover::after { left: 120%; }
+.btn-primary:active { transform: translateY(0) scale(.98); }
+.btn-ghost { position: relative; overflow: hidden; isolation: isolate; border: 1.5px solid var(--forest); color: var(--forest); background: rgba(255,255,255,0.4); border-radius: 999px;
+  transition: transform .3s var(--ease), color .3s ease; }
+.btn-ghost::before { content: ''; position: absolute; inset: 0; z-index: -1; background: var(--forest); border-radius: 50%; transform: translateY(101%) scale(1.4); transition: transform .55s cubic-bezier(.65,0,.35,1); }
 .btn-ghost:hover { transform: translateY(-2px); color: var(--paper); }
-.btn-ghost:hover::before { transform: scaleX(1); }
-
-.btn-primary:focus-visible, .btn-ghost:focus-visible, .u-link:focus-visible, .seg:focus-visible, .row-btn:focus-visible {
-  outline: 2px solid var(--marigold); outline-offset: 3px;
-}
+.btn-ghost:hover::before { transform: translateY(0) scale(1.4); }
+.btn-primary:focus-visible, .btn-ghost:focus-visible, .u-link:focus-visible, .seg:focus-visible, .row-btn:focus-visible { outline: 2px solid var(--marigold); outline-offset: 3px; }
 .arrow { transition: transform .25s ease; }
 .btn-primary:hover .arrow, .btn-ghost:hover .arrow, .u-link:hover .arrow { transform: translateX(4px); }
-
 .u-link { position: relative; }
-.u-link::after {
-  content: ''; position: absolute; left: 0; right: 0; bottom: -3px; height: 1.5px; background: currentColor;
-  transform: scaleX(0); transform-origin: left; transition: transform .3s ease;
-}
+.u-link::after { content: ''; position: absolute; left: 0; right: 0; bottom: -3px; height: 1.5px; background: currentColor; transform: scaleX(0); transform-origin: left; transition: transform .3s ease; }
 .u-link:hover::after { transform: scaleX(1); }
 
-/* ---------- Hand-made details ---------- */
 .draw { stroke-dasharray: 260; stroke-dashoffset: 260; animation: draw 1.3s ease forwards; animation-delay: var(--d, 0.9s); }
-.tape {
-  position: absolute; width: 78px; height: 24px; background: rgba(226,205,140,0.72);
-  box-shadow: 0 1px 2px rgba(0,0,0,0.18);
-}
+.tape { position: absolute; width: 78px; height: 24px; background: rgba(226,205,140,0.72); box-shadow: 0 1px 2px rgba(0,0,0,0.18); }
 .print { box-shadow: 0 2px 4px rgba(0,0,0,0.18), 0 28px 40px -20px rgba(20,30,20,0.55); }
+.float-slow { animation: floatY 7s ease-in-out infinite; }
 
 /* ---------- Controls ---------- */
-.seg { transition: background .3s ease, color .3s ease, box-shadow .3s ease, transform .2s ease; }
+.seg { transition: background .3s ease, color .3s ease, box-shadow .3s ease, transform .2s ease, flex .6s var(--ease); }
 .seg:active, .row-btn:active { transform: scale(.985); }
-.bar-fill { transition: width .8s cubic-bezier(.2,.8,.2,1), background .4s ease; }
+.bar-fill { transition: width .9s cubic-bezier(.2,.8,.2,1), background .4s ease; }
 .row-btn { transition: background .25s ease; }
+.field { width: 100%; padding: .65rem .9rem; border-radius: 12px; background: rgba(255,255,255,.12); border: 1px solid rgba(255,255,255,.35); color: #F4EEDC; font: inherit; outline: none; transition: border-color .25s, background .25s; }
+.field:focus { border-color: var(--marigold); background: rgba(255,255,255,.2); }
 
-.range { -webkit-appearance: none; appearance: none; width: 100%; height: 6px; border-radius: 999px; outline: none; background: #D9CFAE; touch-action: pan-y; }
-.range::-webkit-slider-thumb { -webkit-appearance: none; width: 24px; height: 24px; border-radius: 50%; cursor: grab; background: var(--forest); border: 3px solid var(--paper); box-shadow: 0 3px 8px rgba(0,0,0,0.35); }
-.range::-moz-range-thumb { width: 20px; height: 20px; border-radius: 50%; cursor: grab; background: var(--forest); border: 3px solid var(--paper); box-shadow: 0 3px 8px rgba(0,0,0,0.35); }
-
-.lens-field {
-  background:
-    repeating-linear-gradient(90deg, rgba(10,50,25,0) 0 13px, rgba(10,50,25,0.22) 13px 16px),
-    linear-gradient(160deg, #8DBF63, #3F8A4D 70%, #2E6E3E);
-}
+.lens-field { background: repeating-linear-gradient(90deg, rgba(10,50,25,0) 0 13px, rgba(10,50,25,0.22) 13px 16px), linear-gradient(160deg, #8DBF63, #3F8A4D 70%, #2E6E3E); }
 .lens-grid { transition: background-size .8s cubic-bezier(.2,.8,.2,1), opacity .4s ease; }
 
 /* ---------- Location card ---------- */
@@ -612,25 +589,29 @@ body { margin: 0; -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: 
 .loc-retry:focus-visible { outline: 2px solid var(--marigold); outline-offset: 2px; }
 
 /* ---------- Reveal ---------- */
-.reveal { opacity: 0; transform: translate3d(0,26px,0); transition: opacity .9s var(--ease), transform .9s var(--ease); transition-delay: var(--d, 0ms); }
-.reveal.is-visible { opacity: 1; transform: none; }
+.reveal { opacity: 0; transform: translate3d(0,28px,0) scale(.985); filter: blur(6px); transition: opacity .9s var(--ease), transform .9s var(--ease), filter .9s var(--ease); transition-delay: var(--d, 0ms); }
+.reveal.is-visible { opacity: 1; transform: none; filter: none; }
 .hero-in { opacity: 0; animation: heroIn .9s var(--ease) forwards; animation-delay: var(--d, 0ms); }
 
 /* ---------- Fit to every screen ---------- */
-.hero-fit { min-height: calc(100vh - 4.25rem); min-height: calc(100dvh - 4.25rem); display: flex; align-items: center; }
+.hero-fit { min-height: calc(100vh - 5rem); min-height: calc(100dvh - 5rem); display: flex; align-items: center; }
 .hero-fit > * { width: 100%; }
-section[id] { scroll-margin-top: 5.25rem; }
+section[id] { scroll-margin-top: 6rem; }
 #datasets, #workflow, #rotations, #transparency { content-visibility: auto; contain-intrinsic-size: auto 900px; }
 footer { padding-bottom: env(safe-area-inset-bottom, 0px); }
-.mobile-nav { display: flex; gap: 1.25rem; overflow-x: auto; scrollbar-width: none; padding: 0 1.5rem .65rem; font-size: .8rem; font-weight: 600; color: #3C4B40; -webkit-overflow-scrolling: touch; }
+.mobile-nav { display: flex; gap: 1.25rem; overflow-x: auto; scrollbar-width: none; padding: 0 1.25rem .65rem; font-size: .8rem; font-weight: 600; color: #3C4B40; -webkit-overflow-scrolling: touch; scroll-snap-type: x proximity; }
 .mobile-nav::-webkit-scrollbar { display: none; }
-.mobile-nav a { white-space: nowrap; padding: .25rem 0; }
+.mobile-nav a { white-space: nowrap; padding: .25rem 0; scroll-snap-align: start; }
 @media (min-width: 1024px) { .mobile-nav { display: none; } }
 @media (pointer: coarse) { .btn-primary, .btn-ghost { min-height: 44px; } }
 
+/* ---------- Marquee of data sources ---------- */
+.marquee { overflow: hidden; -webkit-mask-image: linear-gradient(90deg, transparent, #000 8%, #000 92%, transparent); mask-image: linear-gradient(90deg, transparent, #000 8%, #000 92%, transparent); }
+.marquee-track { display: flex; gap: .75rem; width: max-content; animation: marquee 38s linear infinite; }
+.marquee:hover .marquee-track { animation-play-state: paused; }
+
 /* ---------- Tractor ---------- */
-.scene-tractor { position: fixed; left: 0; bottom: 7vh; width: 150px; z-index: 0; pointer-events: none;
-  animation: tractorDrive 56s linear infinite; will-change: transform; filter: drop-shadow(0 8px 6px rgba(20,40,20,0.35)); }
+.scene-tractor { position: fixed; left: 0; bottom: 7vh; width: clamp(105px, 10vw, 170px); z-index: 0; pointer-events: none; animation: tractorDrive 56s linear infinite; will-change: transform; filter: drop-shadow(0 8px 6px rgba(20,40,20,0.35)); }
 .scene-tractor svg { width: 100%; height: auto; display: block; }
 .tractor-body { animation: tractorBob .55s ease-in-out infinite; }
 .tractor-wheel { animation: wheelSpin 2.2s linear infinite; }
@@ -646,13 +627,12 @@ footer { padding-bottom: env(safe-area-inset-bottom, 0px); }
 .tricolour i:nth-child(1) { background: #FF9933; }
 .tricolour i:nth-child(2) { background: #FFFFFF; }
 .tricolour i:nth-child(3) { background: #138808; }
-.chip { display: inline-flex; align-items: center; padding: .3rem .75rem; border-radius: 999px; font-size: .78rem; font-weight: 600; color: var(--forest);
-  background: rgba(255,255,255,0.55); border: 1px solid rgba(255,255,255,0.85); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); }
-.farmer-ico { display: grid; place-items: center; width: 40px; height: 40px; border-radius: 12px; color: var(--paper);
+.chip { display: inline-flex; align-items: center; padding: .3rem .8rem; border-radius: 999px; font-size: .78rem; font-weight: 600; color: var(--forest);
+  background: rgba(255,255,255,0.55); border: 1px solid rgba(255,255,255,0.85); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); white-space: nowrap; box-shadow: inset 0 1px 0 #fff; }
+.farmer-ico { display: grid; place-items: center; width: 42px; height: 42px; border-radius: 14px; color: var(--paper);
   background: linear-gradient(145deg, var(--forest-2), var(--forest)); box-shadow: inset 0 1px 0 rgba(255,255,255,0.3), 0 8px 16px -8px rgba(20,50,30,0.8); }
-.farmer-card:hover { background: rgba(255,255,255,0.62); box-shadow: inset 0 1px 0 #fff, 0 20px 36px -20px rgba(20,45,28,0.6); }
-.lang-toggle { display: inline-flex; padding: 2px; border-radius: 999px; border: 1px solid rgba(31,61,43,0.35); background: rgba(255,255,255,0.5);
-  font-size: 11px; font-weight: 600; color: var(--forest); touch-action: manipulation; }
+.farmer-card:hover { background: rgba(255,255,255,0.64); box-shadow: inset 0 1px 0 #fff, 0 22px 38px -20px rgba(20,45,28,0.6); transform: translateY(-4px); }
+.lang-toggle { display: inline-flex; padding: 2px; border-radius: 999px; border: 1px solid rgba(31,61,43,0.35); background: rgba(255,255,255,0.5); font-size: 11px; font-weight: 600; color: var(--forest); touch-action: manipulation; }
 .lang-toggle span { padding: .22rem .55rem; border-radius: 999px; transition: background .3s ease, color .3s ease; }
 .lang-toggle span.on { background: var(--forest); color: var(--paper); }
 .lang-toggle:focus-visible { outline: 2px solid var(--marigold); outline-offset: 3px; }
@@ -668,31 +648,32 @@ footer { padding-bottom: env(safe-area-inset-bottom, 0px); }
 @keyframes draw { to { stroke-dashoffset: 0; } }
 @keyframes rainDrift { from { transform: translate3d(0,-60px,0); } to { transform: translate3d(-16px,0,0); } }
 @keyframes locPulse { 0% { transform: scale(.8); opacity: .9; } 100% { transform: scale(1.5); opacity: 0; } }
+@keyframes spinRim { to { --spin: 360deg; } }
+@keyframes marquee { to { transform: translate3d(-50%,0,0); } }
+@keyframes floatY { 0%,100% { transform: translateY(0); } 50% { transform: translateY(-8px); } }
+@keyframes blobMorph { 0%,100% { border-radius: 60% 40% 55% 45% / 50% 60% 40% 50%; } 50% { border-radius: 40% 60% 45% 55% / 60% 40% 60% 40%; } }
+@keyframes blobDrift { 0%,100% { transform: translate3d(0,0,0) rotate(0deg); } 50% { transform: translate3d(6vw,-4vh,0) rotate(30deg); } }
 
 /* ---------- Responsive ---------- */
-@media (max-width: 1023px) {
-  .scene-sunwrap { transform: translate3d(0,0,0) scale(.8) !important; }
-}
+@media (max-width: 1023px) { .scene-sunwrap { transform: translate3d(0,0,0) scale(.8) !important; } }
 @media (max-width: 640px) {
-  .scene-stalks.back, .scene-rain { display: none; }
-  .scene-sun { width: 90px; height: 90px; }
-  .scene-tractor { width: 105px; bottom: 9vh; }
+  .scene-stalks.back, .scene-rain, .blob { display: none; }
   .map-frame:hover { transform: none; }
-  .glass, .glass-bar, .glass-cap { backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); }
+  .glass, .glass-bar, .glass-cap, .glass-soft, .paper { backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); }
   .hero-fit { align-items: flex-start; }
   table { font-size: 12.5px; }
 }
-@media (min-width: 1536px) { .scene { font-size: 17px; } }
+@media (hover: none) { .glass::after, .glass-soft::after, .glass-dark::after, .paper::after { display: none; } }
 
-/* ---------- Reduced motion: keep gentle colour changes, drop movement ---------- */
+/* ---------- Reduced motion ---------- */
 @media (prefers-reduced-motion: reduce) {
-  .scene-cloud, .stalk, .scene-rain, .loc-pin.is-busy::after { animation: none !important; }
-  .scene-rain, .progress { display: none; }
+  .scene-cloud, .stalk, .scene-rain, .loc-pin.is-busy::after, .blob, .rim > .rim-line, .marquee-track, .float-slow { animation: none !important; }
+  .scene-rain, .progress, .blob { display: none; }
   .scene-sunwrap, .scene-stalks, .scene-hill { transition: none !important; transform: none !important; }
   .scene-sky, .scene-haze, .scene-sun, .scene-cloud { transition-duration: .4s; }
-  .map-frame:hover, .loc-card:hover { transform: none; }
+  .map-frame:hover, .loc-card:hover, .farmer-card:hover { transform: none; }
   .draw { animation: none !important; stroke-dashoffset: 0; }
-  .reveal, .hero-in { opacity: 1 !important; transform: none !important; animation: none !important; transition: none !important; }
+  .reveal, .hero-in { opacity: 1 !important; transform: none !important; filter: none !important; animation: none !important; transition: none !important; }
   html { scroll-behavior: auto; }
   .scene-tractor { animation: none !important; transform: translate3d(62vw,0,0) !important; }
   .tractor-wheel, .tractor-body, .tractor-puff { animation: none !important; }
@@ -702,17 +683,7 @@ footer { padding-bottom: env(safe-area-inset-bottom, 0px); }
 /* -------------------------------------------------------------------------- */
 /*  Scroll-driven season                                                       */
 /* -------------------------------------------------------------------------- */
-/**
- * Opens on the real current season, then advances Kharif → Rabi → Zaid as the visitor
- * scrolls. Picking a season manually re-anchors the cycle at the current scroll position,
- * so the selector and background always agree. Also owns the parallax variable (--sy), the
- * scroll progress (--progress) and a data-scrolled flag, via a single passive, rAF-throttled
- * listener cleaned up on unmount.
- */
-function useSeasonScroll(
-  sceneRef: { current: HTMLElement | null },
-  initial: SeasonKey
-): [SeasonKey, (s: SeasonKey) => void] {
+function useSeasonScroll(sceneRef: { current: HTMLElement | null }, initial: SeasonKey): [SeasonKey, (s: SeasonKey) => void] {
   const [season, setSeason] = useState<SeasonKey>(initial);
   const base = useRef(SEASON_ORDER.indexOf(initial));
   const step = useRef(0);
@@ -732,7 +703,6 @@ function useSeasonScroll(
       const max = Math.max(1, document.documentElement.scrollHeight - window.innerHeight);
       const p = Math.min(1, Math.max(0, y / max));
       el.style.setProperty('--progress', p.toFixed(4));
-      // The Seasons section sits inside the first third, so it still shows the current season.
       const next = p < 0.3 ? 0 : p < 0.64 ? 1 : 2;
       if (next !== step.current) {
         step.current = next;
@@ -761,6 +731,34 @@ function useSeasonScroll(
   return [season, choose];
 }
 
+/** One delegated pointer listener drives the liquid specular highlight on every glass surface. */
+function useLiquidPointer(sceneRef: { current: HTMLElement | null }) {
+  useEffect(() => {
+    const el = sceneRef.current;
+    if (!el || !window.matchMedia('(hover: hover)').matches) return;
+    let raf = 0;
+    let ev: PointerEvent | null = null;
+    const apply = () => {
+      raf = 0;
+      if (!ev) return;
+      const t = (ev.target as HTMLElement | null)?.closest<HTMLElement>('.glass, .glass-soft, .glass-dark, .paper');
+      if (!t) return;
+      const r = t.getBoundingClientRect();
+      t.style.setProperty('--mx', `${ev.clientX - r.left}px`);
+      t.style.setProperty('--my', `${ev.clientY - r.top}px`);
+    };
+    const onMove = (e: PointerEvent) => {
+      ev = e;
+      if (!raf) raf = requestAnimationFrame(apply);
+    };
+    el.addEventListener('pointermove', onMove, { passive: true });
+    return () => {
+      el.removeEventListener('pointermove', onMove);
+      if (raf) cancelAnimationFrame(raf);
+    };
+  }, [sceneRef]);
+}
+
 /* -------------------------------------------------------------------------- */
 /*  Scene                                                                      */
 /* -------------------------------------------------------------------------- */
@@ -769,28 +767,24 @@ const SKIES: Record<SeasonKey, string> = {
   rabi: 'linear-gradient(180deg,#7FB9E6 0%,#D7E8EC 50%,#F6EBC8 100%)',
   zaid: 'linear-gradient(180deg,#8DB9E0 0%,#F3D9AE 55%,#F7E3B8 100%)',
 };
-
 const HAZE: Record<SeasonKey, string> = {
   kharif: 'linear-gradient(to top, rgba(214,238,226,0.55), rgba(214,238,226,0) 55%)',
   rabi: 'linear-gradient(to top, rgba(255,230,170,0.42), rgba(255,230,170,0) 50%)',
   zaid: 'linear-gradient(to top, rgba(255,196,120,0.40), rgba(255,196,120,0) 60%)',
 };
-
 const SUNS: Record<SeasonKey, { bg: string; glow: string }> = {
   kharif: { bg: 'radial-gradient(circle,#FFFFFF 0 40%,rgba(235,244,250,0.7) 62%,transparent 72%)', glow: '0 0 80px 36px rgba(235,244,250,0.35)' },
   rabi: { bg: 'radial-gradient(circle,#FFF6D6 0 45%,rgba(255,226,150,0.85) 62%,transparent 72%)', glow: '0 0 100px 46px rgba(255,214,130,0.5)' },
   zaid: { bg: 'radial-gradient(circle,#FFFFFF 0 48%,rgba(255,236,170,0.9) 64%,transparent 74%)', glow: '0 0 130px 70px rgba(255,226,140,0.6)' },
 };
-
 const CLOUDS: { top: string; w: number; dur: number; delay: number; op: Record<SeasonKey, number> }[] = [
   { top: '7%', w: 240, dur: 170, delay: -50, op: { kharif: 0.95, rabi: 0.75, zaid: 0.35 } },
   { top: '20%', w: 380, dur: 230, delay: -150, op: { kharif: 0.85, rabi: 0.55, zaid: 0.25 } },
   { top: '13%', w: 300, dur: 260, delay: -90, op: { kharif: 0.9, rabi: 0.2, zaid: 0 } },
   { top: '30%', w: 220, dur: 200, delay: -20, op: { kharif: 0.7, rabi: 0, zaid: 0 } },
 ];
-
-const STALKS = Array.from({ length: 44 }, (_, i) => ({
-  left: (i / 44) * 100 + (seeded(i) - 0.5) * 2,
+const STALKS = Array.from({ length: 56 }, (_, i) => ({
+  left: (i / 56) * 100 + (seeded(i) - 0.5) * 2,
   height: 60 + seeded(i + 9) * 70,
   dur: 4.5 + seeded(i + 3) * 3.5,
   delay: -seeded(i + 21) * 6,
@@ -828,7 +822,6 @@ function SceneBackground({ season }: { season: SeasonKey }) {
       {SEASON_ORDER.map((k) => (
         <div key={`sky-${k}`} className="scene-sky" style={{ background: SKIES[k], opacity: season === k ? 1 : 0 }} />
       ))}
-
       <div className="scene-sunwrap">
         {SEASON_ORDER.map((k) => (
           <div key={`sun-${k}`} className="scene-sun" style={{ background: SUNS[k].bg, boxShadow: SUNS[k].glow, opacity: season === k ? 1 : 0 }} />
@@ -857,7 +850,8 @@ function SceneBackground({ season }: { season: SeasonKey }) {
         <div key={`haze-${k}`} className="scene-haze" style={{ background: HAZE[k], opacity: season === k ? 1 : 0 }} />
       ))}
       <div className="scene-rain" style={{ opacity: season === 'kharif' ? 0.11 : 0 }} />
-
+      <div className="blob b1" />
+      <div className="blob b2" />
       <div className="scene-plane" />
 
       <div className="scene-stalks back">
@@ -946,8 +940,9 @@ function Kicker({ n, children }: { n: string; children: string }) {
   );
 }
 
-const fmt = (n: number) =>
-  n >= 100 ? Math.round(n).toLocaleString('en-IN') : n >= 10 ? n.toFixed(0) : n >= 1 ? n.toFixed(1) : n.toFixed(2);
+const Rim = () => <span className="rim-line" aria-hidden="true" />;
+
+const fmt = (n: number) => (n >= 100 ? Math.round(n).toLocaleString('en-IN') : n >= 10 ? n.toFixed(0) : n >= 1 ? n.toFixed(1) : n.toFixed(2));
 const sizeLabel = (m: number) => (m >= 1000 ? `${m / 1000} km` : `${m} m`);
 
 /* -------------------------------------------------------------------------- */
@@ -957,19 +952,17 @@ export function LandingPage() {
   const navigate = useNavigate();
   const { signInWithGoogle, enterDemoMode, user } = useAuth();
   const sceneRef = useRef<HTMLDivElement>(null);
+  const loc = useUserLocation();
 
   const today = new Date();
   const [season, setSeason] = useSeasonScroll(sceneRef, currentSeasonFromDate());
+  useLiquidPointer(sceneRef);
+
   const [strategyIdx, setStrategyIdx] = useState(0);
-  const [rain, setRain] = useState(0);
   const [lensId, setLensId] = useState<(typeof DATASETS)[number]['id']>('POWER');
+  const [parcelInput, setParcelInput] = useState('1');
   const [checks, setChecks] = useState<Record<string, boolean>>({
-    boundary: true,
-    irrigation: true,
-    history: true,
-    ph: false,
-    npk: false,
-    token: false,
+    boundary: false, irrigation: false, history: false, ph: false, npk: false, token: false,
   });
   const [authModalOpen, setAuthModalOpen] = useState(false);
   const [authModalMode, setAuthModalMode] = useState<'login' | 'register'>('login');
@@ -985,7 +978,6 @@ export function LandingPage() {
       await signInWithGoogle();
       navigate('/app/overview');
     } catch {
-      // If popup is blocked or cancelled, allow immediate demo workspace exploration
       enterDemoMode();
       navigate('/app/overview');
     }
@@ -1007,27 +999,27 @@ export function LandingPage() {
           }
         });
       },
-      { threshold: 0.12, rootMargin: '0px 0px -40px 0px' }
+      { threshold: 0.1, rootMargin: '0px 0px -40px 0px' }
     );
     els.forEach((el) => io.observe(el));
     return () => io.disconnect();
   }, []);
 
-  /* ---- derived ---- */
+  /* ---- derived (no invented numbers: everything comes from the tables above) ---- */
   const todayMonthIdx = (today.getMonth() + 7) % 12;
   const todaySeason = currentSeasonFromDate(today);
   const S = SEASONS[season];
 
+  const cropCount = useMemo(() => new Set(SEASON_ORDER.flatMap((k) => SEASONS[k].crops)).size, []);
   const strategy = STRATEGIES[strategyIdx];
-  const effRain = ASSUMED_EFFECTIVE_RAIN_MM * (1 + rain / 100);
-  const gapFor = (w: number) => Math.max(0, w - effRain);
-  const maxWater = 1800;
+  const st = structureOf(strategy);
 
   const lens = DATASETS.find((d) => d.id === lensId)!;
-  const parcelHa = Number(DEMO_FARM.area) || 1;
+  const parsedParcel = Number(parcelInput);
+  const parcelHa = Number.isFinite(parsedParcel) && parsedParcel > 0 ? parsedParcel : 1;
   const pixelHa = Math.pow(lens.res / 1000, 2) * 100;
   const ratio = pixelHa / parcelHa;
-  const cellPct = (lens.res / 60000) * 100; // window represents 60 km
+  const cellPct = (lens.res / 60000) * 100;
   const cellShown = Math.min(100, Math.max(cellPct, 2.6));
   const enlarged = cellPct < 2.6;
   const coversView = cellPct >= 100;
@@ -1037,6 +1029,13 @@ export function LandingPage() {
 
   const t = I18N[lang];
   const navLinks = NAV_IDS.map((id, i) => [t.nav[i], id]);
+  const marquee = [...DATASETS, ...DATASETS];
+
+  const heroStats: [string, string, string][] = [
+    [String(cropCount), 'crops', 'Across Kharif, Rabi and Zaid'],
+    [String(DATASETS.length), 'NASA datasets', 'Live POWER + Earthdata adapters'],
+    [String(STRATEGIES.length), 'rotations', 'Your baseline vs soil & water plans'],
+  ];
 
   return (
     <div ref={sceneRef} className="scene relative overflow-x-hidden" data-season={season} data-lang={lang}>
@@ -1047,38 +1046,27 @@ export function LandingPage() {
       <div className="relative z-10">
         {/* ------------------------------ Header ------------------------------ */}
         <header className="sticky top-0 z-30 glass-bar">
-          <div className="max-w-6xl mx-auto px-4 sm:px-6 py-3 sm:py-3.5 flex items-center justify-between gap-4 md:gap-8">
+          <div className="wrap py-3 sm:py-3.5 flex items-center justify-between gap-4 md:gap-8">
             <a href="#top" className="flex items-center gap-2 text-[#1F3D2B] whitespace-nowrap shrink-0">
               <Sprout className="w-6 h-6" />
               <span className="f-serif text-xl">AgriShift</span>
             </a>
 
-            <nav aria-label="Primary" className="hidden lg:flex items-center gap-5 xl:gap-7 text-sm font-medium text-[#3C4B40]">
+            <nav aria-label="Primary" className="hidden lg:flex items-center gap-5 xl:gap-8 text-sm font-medium text-[#3C4B40]">
               {navLinks.map(([l, h]) => (
                 <a key={h} href={h} className="u-link hover:text-[#1B2A20] whitespace-nowrap shrink-0">{l}</a>
               ))}
             </nav>
 
             <div className="shrink-0 flex items-center gap-2 sm:gap-3">
-              <button
-                type="button"
-                onClick={() => setLang(lang === 'en' ? 'hi' : 'en')}
-                className="lang-toggle"
-                aria-label="Switch language between English and Hindi"
-              >
+              <button type="button" onClick={() => setLang(lang === 'en' ? 'hi' : 'en')} className="lang-toggle" aria-label="Switch language between English and Hindi">
                 <span className={lang === 'en' ? 'on' : ''}>EN</span>
                 <span className={`f-deva ${lang === 'hi' ? 'on' : ''}`}>हिं</span>
               </button>
               {user ? (
                 <>
-                  <span className="hidden sm:inline text-xs font-medium text-[#1F3D2B] max-w-[10rem] truncate">
-                    {user.name || user.email}
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() => navigate('/app/overview')}
-                    className="btn-primary px-4 py-2 text-sm font-medium whitespace-nowrap"
-                  >
+                  <span className="hidden sm:inline text-xs font-medium text-[#1F3D2B] max-w-[10rem] truncate">{user.name || user.email}</span>
+                  <button type="button" onClick={() => navigate('/app/overview')} className="btn-primary px-4 py-2 text-sm font-medium whitespace-nowrap">
                     Go to Dashboard
                   </button>
                 </>
@@ -1086,29 +1074,19 @@ export function LandingPage() {
                 <>
                   <button
                     type="button"
-                    onClick={() => {
-                      setAuthModalMode('login');
-                      setAuthModalOpen(true);
-                    }}
-                    className="px-3 sm:px-3.5 py-1.5 text-xs font-semibold text-[#1F3D2B] hover:text-[#111C15] hover:bg-black/5 rounded-lg transition-colors whitespace-nowrap"
+                    onClick={() => { setAuthModalMode('login'); setAuthModalOpen(true); }}
+                    className="px-3 sm:px-3.5 py-1.5 text-xs font-semibold text-[#1F3D2B] hover:text-[#111C15] hover:bg-black/5 rounded-full transition-colors whitespace-nowrap"
                   >
                     Sign In
                   </button>
                   <button
                     type="button"
-                    onClick={() => {
-                      setAuthModalMode('register');
-                      setAuthModalOpen(true);
-                    }}
-                    className="px-3.5 py-1.5 text-xs font-semibold border border-[#1F3D2B] text-[#1F3D2B] hover:bg-[#1F3D2B] hover:text-white rounded-lg transition-colors whitespace-nowrap hidden sm:inline-block"
+                    onClick={() => { setAuthModalMode('register'); setAuthModalOpen(true); }}
+                    className="px-3.5 py-1.5 text-xs font-semibold border border-[#1F3D2B] text-[#1F3D2B] hover:bg-[#1F3D2B] hover:text-white rounded-full transition-colors whitespace-nowrap hidden sm:inline-block"
                   >
                     Register
                   </button>
-                  <button
-                    type="button"
-                    onClick={handleExploreFarm}
-                    className="btn-primary px-3 sm:px-3.5 py-1.5 text-xs font-medium whitespace-nowrap"
-                  >
+                  <button type="button" onClick={handleExploreFarm} className="btn-primary px-3.5 py-1.5 text-xs font-medium whitespace-nowrap">
                     Explore Farm
                   </button>
                 </>
@@ -1116,7 +1094,6 @@ export function LandingPage() {
             </div>
           </div>
 
-          {/* Mobile section links (swipe sideways) */}
           <nav aria-label="Sections" className="mobile-nav">
             {navLinks.map(([l, h]) => (
               <a key={h} href={h}>{l}</a>
@@ -1126,8 +1103,8 @@ export function LandingPage() {
 
         <main id="top">
           {/* ------------------------------- Hero ------------------------------- */}
-          <section className="hero-fit max-w-6xl mx-auto px-4 sm:px-6 pt-10 pb-16 lg:pt-12 lg:pb-20">
-            <div className="grid grid-cols-1 lg:grid-cols-12 gap-10 lg:gap-12 items-center">
+          <section className="hero-fit wrap pt-8 pb-14 lg:pt-10 lg:pb-20">
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-10 lg:gap-14 items-center">
               <div className="lg:col-span-7">
                 <p className="hero-in glass-soft inline-flex items-center gap-2 rounded-full px-3.5 py-1.5 text-sm text-[#1F3D2B] mb-4" style={cv({ '--d': '0ms' })}>
                   <span aria-hidden="true">🙏</span>
@@ -1139,10 +1116,7 @@ export function LandingPage() {
                 <p className="hero-in f-deva text-lg text-[#1F3D2B] mb-5" style={cv({ '--d': '100ms' })}>
                   खेत की बात, आसमान से
                 </p>
-                <h1
-                  className="hero-in f-serif text-[#14261B] leading-[1.06] mb-6"
-                  style={cv({ '--d': '160ms' }, { fontSize: 'clamp(2.1rem, 4.6vw, 4rem)', textWrap: 'balance' } as CSSProperties)}
-                >
+                <h1 className="hero-in f-serif text-[#14261B] leading-[1.05] mb-6" style={cv({ '--d': '160ms' }, { fontSize: 'clamp(2.2rem, 1.2rem + 3.6vw, 4.8rem)', ...balance })}>
                   {t.h1a}{' '}
                   <span className="relative inline-block">
                     {t.h1b}
@@ -1152,16 +1126,16 @@ export function LandingPage() {
                   </span>{' '}
                   {t.h1c}
                 </h1>
-                <p className="hero-in text-base lg:text-lg text-[#24392C] leading-relaxed max-w-xl mb-8" style={cv({ '--d': '260ms' })}>
+                <p className="hero-in text-base lg:text-lg text-[#24392C] leading-relaxed max-w-2xl mb-8" style={cv({ '--d': '260ms' })}>
                   {t.sub}
                 </p>
 
                 <div className="hero-in flex flex-wrap items-center gap-3 mb-4" style={cv({ '--d': '340ms' })}>
-                  <button type="button" onClick={handleExploreFarm} className="btn-primary inline-flex items-center gap-2 px-6 py-3 text-sm font-semibold whitespace-nowrap">
+                  <button type="button" onClick={handleExploreFarm} className="btn-primary inline-flex items-center gap-2 px-7 py-3.5 text-sm font-semibold whitespace-nowrap">
                     <span>{t.cta1}</span>
                     <ArrowRight className="arrow w-4 h-4" />
                   </button>
-                  <a href="#datasets" className="btn-ghost inline-flex items-center gap-2 px-6 py-3 text-sm font-semibold whitespace-nowrap">
+                  <a href="#datasets" className="btn-ghost inline-flex items-center gap-2 px-7 py-3.5 text-sm font-semibold whitespace-nowrap">
                     {t.cta2}
                   </a>
                 </div>
@@ -1174,15 +1148,12 @@ export function LandingPage() {
                   </p>
                 )}
 
-                <dl className="hero-in glass rounded-xl px-4 sm:px-5 py-4 grid grid-cols-3 gap-3 sm:gap-4 max-w-xl" style={cv({ '--d': '480ms' })}>
-                  {[
-                    ['17', 'crops', 'ICAR & FAO agronomic profiles'],
-                    ['8', 'NASA datasets', 'Live POWER + Earthdata adapters'],
-                    ['4', 'strategies', 'Baseline vs soil & water models'],
-                  ].map(([n, l, s]) => (
-                    <div key={l} className="border-l border-[#1F3D2B]/20 pl-3 sm:pl-4 first:border-l-0 first:pl-0 min-w-0">
+                <dl className="hero-in glass rim rounded-2xl px-4 sm:px-6 py-4 grid grid-cols-3 gap-3 sm:gap-5 max-w-2xl" style={cv({ '--d': '480ms' })}>
+                  <Rim />
+                  {heroStats.map(([n, l, s]) => (
+                    <div key={l} className="border-l border-[#1F3D2B]/20 pl-3 sm:pl-5 first:border-l-0 first:pl-0 min-w-0">
                       <dt className="text-xs sm:text-sm text-[#1B2A20]">
-                        <span className="f-serif text-xl sm:text-2xl num mr-1.5 text-[#1F3D2B]">{n}</span>
+                        <span className="f-serif text-2xl sm:text-3xl num mr-1.5 text-[#1F3D2B]">{n}</span>
                         {l}
                       </dt>
                       <dd className="text-[11px] sm:text-xs text-[#4A5A4E] mt-1">{s}</dd>
@@ -1191,52 +1162,45 @@ export function LandingPage() {
                 </dl>
               </div>
 
-              {/* Printed photo with tape and a margin note */}
+              {/* Printed photo with the visitor's live location on the caption */}
               <div className="lg:col-span-5 hero-in relative lg:pl-4" style={cv({ '--d': '280ms' })}>
-                <div className="relative mx-auto max-w-[17rem] sm:max-w-sm" style={{ transform: 'rotate(1.6deg)' }}>
-                  <span className="tape -top-3 left-6" style={{ transform: 'rotate(-5deg)' }} />
-                  <span className="tape -top-3 right-6" style={{ transform: 'rotate(4deg)' }} />
-                  <div className="print bg-white p-3 pb-14 relative">
-                    <div className="aspect-[4/5] overflow-hidden bg-[#163026]">
-                      <img
-                        src="/src/assets/images/hero_agri_satellite_1794669905794.jpg"
-                        alt="Aerial Earth observation view of geometric green crop fields and irrigation channels"
-                        referrerPolicy="no-referrer"
-                        loading="eager"
-                        decoding="async"
-                        className="w-full h-full object-cover"
-                      />
+                <div className="float-slow">
+                  <div className="relative mx-auto max-w-[17rem] sm:max-w-sm lg:max-w-md" style={{ transform: 'rotate(1.6deg)' }}>
+                    <span className="tape -top-3 left-6" style={{ transform: 'rotate(-5deg)' }} />
+                    <span className="tape -top-3 right-6" style={{ transform: 'rotate(4deg)' }} />
+                    <div className="print bg-white p-3 pb-14 relative rounded-sm">
+                      <div className="aspect-[4/5] overflow-hidden bg-[#163026]">
+                        <img
+                          src="/src/assets/images/hero_agri_satellite_1794669905794.jpg"
+                          alt="Aerial Earth observation view of geometric green crop fields and irrigation channels"
+                          referrerPolicy="no-referrer"
+                          loading="eager"
+                          decoding="async"
+                          className="w-full h-full object-cover"
+                        />
+                      </div>
+                      <p className="f-hand text-xl text-[#2B3A2F] mt-3 absolute bottom-3 left-5 right-5 leading-tight truncate">
+                        {loc.lat !== null && loc.lon !== null
+                          ? loc.placeName ?? `${fmtCoord(loc.lat, 'N', 'S')}, ${fmtCoord(loc.lon, 'E', 'W')}`
+                          : 'your field, from above'}
+                      </p>
                     </div>
-                    <p className="f-hand text-xl text-[#2B3A2F] mt-3 absolute bottom-3 left-5 right-5 leading-tight">
-                      Barabanki, UP · 26.9240° N, 81.1890° E
-                    </p>
                   </div>
                 </div>
 
-                <div className="glass-cap rounded-lg text-white text-sm leading-snug px-4 py-3 max-w-[18rem] mt-6 mx-auto sm:ml-auto sm:mr-0 lg:-mt-2 lg:-ml-6 relative">
-                  Our demonstration parcel: testing Kharif, Rabi and Zaid rotations against regional rainfall and heat anomalies.
-                </div>
-
-                <LocationCard title={t.loc} className="mt-5 max-w-sm mx-auto lg:mx-0 relative" />
-
-                <div className="hidden lg:flex absolute -right-2 top-2 items-start gap-1 f-hand text-xl text-[#14261B]" style={{ transform: 'rotate(5deg)' }} aria-hidden="true">
-                  <span className="mt-6">the demo<br />parcel</span>
-                  <svg width="54" height="64" viewBox="0 0 54 64" fill="none" stroke="#14261B" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M44 6 C 36 22, 22 34, 8 44" />
-                    <path d="M8 44 L10 32 M8 44 L20 46" />
-                  </svg>
-                </div>
+                <LocationCard loc={loc} title={t.loc} className="mt-7 max-w-md mx-auto lg:mx-0 relative" />
               </div>
             </div>
           </section>
 
           {/* ------------------------------ Seasons ------------------------------ */}
-          <section id="seasons" className="max-w-6xl mx-auto px-4 sm:px-6 pb-16 sm:pb-24">
-            <div className="glass rounded-2xl p-5 sm:p-6 md:p-10 reveal">
+          <section id="seasons" className="wrap sec">
+            <div className="glass rim rounded-3xl p-5 sm:p-8 md:p-12 reveal">
+              <Rim />
               <div className="grid grid-cols-1 md:grid-cols-12 gap-6 md:gap-8 mb-8">
                 <div className="md:col-span-7">
                   <Kicker n="01">Seasons</Kicker>
-                  <h2 className="f-serif text-2xl sm:text-3xl md:text-4xl text-[#14261B] leading-tight" style={{ textWrap: 'balance' } as CSSProperties}>
+                  <h2 className="f-serif text-[clamp(1.6rem,1rem+2vw,3rem)] text-[#14261B] leading-tight" style={balance}>
                     The cropping year, counted the way farmers count it
                   </h2>
                 </div>
@@ -1245,18 +1209,13 @@ export function LandingPage() {
                 </p>
               </div>
 
-              {/* almanac bar */}
               <div className="relative pt-9">
-                <div
-                  className="absolute top-0 flex flex-col items-center -translate-x-1/2 transition-all duration-500"
-                  style={{ left: `${((todayMonthIdx + 0.5) / 12) * 100}%` }}
-                  aria-hidden="true"
-                >
+                <div className="absolute top-0 flex flex-col items-center -translate-x-1/2 transition-all duration-500" style={{ left: `${((todayMonthIdx + 0.5) / 12) * 100}%` }} aria-hidden="true">
                   <span className="f-hand text-lg leading-none text-[#B5482A]">today</span>
                   <span className="block w-0 h-0 border-x-[6px] border-x-transparent border-t-[8px] border-t-[#B5482A]" />
                 </div>
 
-                <div className="flex h-14 sm:h-16 rounded-lg overflow-hidden border border-white/80 shadow-sm" role="tablist" aria-label="Season">
+                <div className="flex h-14 sm:h-16 rounded-2xl overflow-hidden border border-white/80 shadow-sm" role="tablist" aria-label="Season">
                   {SEASON_ORDER.map((k) => {
                     const s = SEASONS[k];
                     const active = season === k;
@@ -1272,7 +1231,7 @@ export function LandingPage() {
                           flex: s.months,
                           background: active ? s.color : `${s.color}55`,
                           color: active ? (k === 'rabi' ? '#2A1E05' : '#fff') : '#1B2A20',
-                          boxShadow: active ? 'inset 0 -4px 0 rgba(0,0,0,0.18)' : 'none',
+                          boxShadow: active ? 'inset 0 -4px 0 rgba(0,0,0,0.18), inset 0 2px 0 rgba(255,255,255,.35)' : 'none',
                         }}
                       >
                         <span>{s.name}</span>
@@ -1282,9 +1241,7 @@ export function LandingPage() {
                   })}
                 </div>
                 <div className="grid grid-cols-12 mt-2 text-[9px] sm:text-[11px] text-[#4A5A4E] num">
-                  {MONTHS.map((m) => (
-                    <span key={m} className="text-center">{m}</span>
-                  ))}
+                  {MONTHS.map((m) => (<span key={m} className="text-center">{m}</span>))}
                 </div>
               </div>
 
@@ -1306,23 +1263,21 @@ export function LandingPage() {
           </section>
 
           {/* ------------------------------ For Indian farmers ------------------------------ */}
-          <section id="farmers" className="max-w-6xl mx-auto px-4 sm:px-6 pb-16 sm:pb-24">
-            <div className="glass rounded-2xl p-5 sm:p-6 md:p-10">
+          <section id="farmers" className="wrap sec">
+            <div className="glass rounded-3xl p-5 sm:p-8 md:p-12">
               <div className="reveal">
                 <Kicker n="भारत">{t.fKicker}</Kicker>
-                <h2 className="f-serif text-2xl sm:text-3xl md:text-4xl text-[#14261B] leading-tight max-w-3xl" style={{ textWrap: 'balance' } as CSSProperties}>
-                  {t.fTitle}
-                </h2>
+                <h2 className="f-serif text-[clamp(1.6rem,1rem+2vw,3rem)] text-[#14261B] leading-tight max-w-3xl" style={balance}>{t.fTitle}</h2>
                 <p className="text-sm sm:text-base text-[#2F4A3A] leading-relaxed max-w-2xl mt-4">{t.fSub}</p>
               </div>
 
               <div className="motif my-8" aria-hidden="true" />
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 lg:gap-5">
                 {FARMER_CARDS.map(({ Icon, en, hi }, i) => {
                   const [h, b] = lang === 'hi' ? hi : en;
                   return (
-                    <article key={en[0]} className="farmer-card glass-soft rounded-xl p-5 reveal" style={cv({ '--d': `${i * 70}ms` })}>
+                    <article key={en[0]} className="farmer-card glass-soft rounded-2xl p-5 sm:p-6 reveal" style={cv({ '--d': `${i * 70}ms` })}>
                       <span className="farmer-ico"><Icon className="w-5 h-5" /></span>
                       <h3 className="f-serif text-lg mt-3 mb-1.5 text-[#14261B]">{h}</h3>
                       <p className="text-sm text-[#2F4A3A] leading-relaxed">{b}</p>
@@ -1335,13 +1290,11 @@ export function LandingPage() {
                 <div className="md:col-span-7">
                   <p className="text-xs font-semibold text-[#2F4A3A] mb-2">{t.termsTitle}</p>
                   <div className="flex flex-wrap gap-2">
-                    {SCHEME_CHIPS.map((c) => (
-                      <span key={c} className="chip">{c}</span>
-                    ))}
+                    {SCHEME_CHIPS.map((c) => (<span key={c} className="chip">{c}</span>))}
                   </div>
                   <p className="text-[11px] text-[#55634F] mt-3 leading-relaxed max-w-xl">{t.termsNote}</p>
                 </div>
-                <a href="tel:18001801551" className="md:col-span-5 glass-soft loc-card rounded-xl px-4 py-3.5 flex items-center gap-3">
+                <a href="tel:18001801551" className="md:col-span-5 glass-soft loc-card rounded-2xl px-4 py-3.5 flex items-center gap-3">
                   <span className="loc-pin"><Phone className="w-4 h-4" /></span>
                   <span>
                     <span className="block text-xs font-semibold text-[#2F4A3A]">{t.helpline}</span>
@@ -1353,13 +1306,13 @@ export function LandingPage() {
           </section>
 
           {/* ------------------------- Data: map + lens + table ------------------------- */}
-          <section id="datasets" className="max-w-6xl mx-auto px-4 sm:px-6 pb-16 sm:pb-24">
-            <div className="paper rounded-lg p-5 sm:p-6 md:p-10">
-              <div className="grid grid-cols-1 md:grid-cols-12 gap-6 md:gap-8 mb-10 reveal">
+          <section id="datasets" className="wrap sec">
+            <div className="paper rounded-3xl p-5 sm:p-8 md:p-12">
+              <div className="grid grid-cols-1 md:grid-cols-12 gap-6 md:gap-8 mb-8 reveal">
                 <div className="md:col-span-7">
                   <Kicker n="02">Earth observation</Kicker>
-                  <h2 className="f-serif text-2xl sm:text-3xl md:text-4xl text-[#14261B] leading-tight" style={{ textWrap: 'balance' } as CSSProperties}>
-                    Eight NASA sources, and each one sees the ground at a different size
+                  <h2 className="f-serif text-[clamp(1.6rem,1rem+2vw,3rem)] text-[#14261B] leading-tight" style={balance}>
+                    {DATASETS.length === 8 ? 'Eight' : DATASETS.length} NASA sources, and each one sees the ground at a different size
                   </h2>
                 </div>
                 <p className="md:col-span-5 text-sm text-[#44544A] leading-relaxed md:pt-6">
@@ -1368,38 +1321,40 @@ export function LandingPage() {
                 </p>
               </div>
 
+              {/* Marquee of sources */}
+              <div className="marquee mb-10 reveal" aria-hidden="true">
+                <div className="marquee-track">
+                  {marquee.map((d, i) => (<span key={`${d.id}-${i}`} className="chip">{d.name} · {d.grid}</span>))}
+                </div>
+              </div>
+
               <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
                 <div className="lg:col-span-7 reveal min-w-0">
                   <div className="map-frame glass-soft p-2">
-                    <FarmLeafletMap
-                      farm={DEMO_FARM}
-                      heightClass="h-[300px] sm:h-[380px]"
-                      baseLayer="satellite"
-                      showBoundary={true}
-                      showRiskZoneOverlay={true}
-                      riskLevel="Moderate"
-                    />
+                    <div className="map-box"><LiveMap loc={loc} /></div>
                   </div>
                   <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 text-xs text-[#55634F] pt-3">
-                    <span>Interactive Parcel Preview · {DEMO_FARM.name} ({DEMO_FARM.area} ha)</span>
-                    <span>Boundary geometry validated with Turf.js</span>
+                    <span>{loc.lat !== null ? `Map centred on ${loc.placeName ?? 'your location'}` : 'Map centres on your location once you allow access'}</span>
+                    <span>© OpenStreetMap contributors</span>
                   </div>
                 </div>
 
                 {/* Lens instrument */}
-                <div className="lg:col-span-5 reveal rounded-lg glass-dark text-[#F4EEDC] p-5 min-w-0" style={cv({ '--d': '120ms' })}>
+                <div className="lg:col-span-5 reveal rounded-2xl glass-dark text-[#F4EEDC] p-5 sm:p-6 min-w-0" style={cv({ '--d': '120ms' })}>
                   <div className="flex items-baseline justify-between mb-3 gap-3">
                     <h3 className="f-serif text-lg">Pixel size over your parcel</h3>
                     <span className="f-hand text-lg text-[#E8C46A] whitespace-nowrap">60 km window</span>
                   </div>
 
-                  <div className="lens-field relative aspect-square w-full max-w-[290px] mx-auto rounded border border-white/40 overflow-hidden">
+                  <label className="block text-xs text-[#D9D3BE] mb-1.5" htmlFor="parcel">Your parcel size (hectares)</label>
+                  <input id="parcel" className="field num mb-4" type="number" inputMode="decimal" min="0.01" step="0.1" value={parcelInput} onChange={(e) => setParcelInput(e.target.value)} />
+
+                  <div className="lens-field relative aspect-square w-full max-w-[320px] mx-auto rounded-xl border border-white/40 overflow-hidden">
                     <div
                       className="lens-grid absolute inset-0"
                       style={{
                         opacity: coversView ? 0 : 1,
-                        backgroundImage:
-                          'linear-gradient(to right, rgba(255,255,255,0.85) 1.5px, transparent 1.5px), linear-gradient(to bottom, rgba(255,255,255,0.85) 1.5px, transparent 1.5px)',
+                        backgroundImage: 'linear-gradient(to right, rgba(255,255,255,0.85) 1.5px, transparent 1.5px), linear-gradient(to bottom, rgba(255,255,255,0.85) 1.5px, transparent 1.5px)',
                         backgroundSize: `${cellShown}% ${cellShown}%`,
                         backgroundPosition: 'center',
                       }}
@@ -1409,9 +1364,7 @@ export function LandingPage() {
                   </div>
 
                   <div className="mt-4 text-sm leading-relaxed">
-                    <div className="font-semibold">
-                      {lens.name} · pixel {sizeLabel(lens.res)}
-                    </div>
+                    <div className="font-semibold">{lens.name} · pixel {sizeLabel(lens.res)}</div>
                     <div className="text-[#D9D3BE] mt-1">
                       {ratio >= 1 ? (
                         <>One pixel covers about <strong className="text-[#E8C46A] num">{fmt(ratio)}×</strong> your {parcelHa} ha parcel.</>
@@ -1445,22 +1398,13 @@ export function LandingPage() {
                     {DATASETS.map((d) => {
                       const sel = d.id === lensId;
                       return (
-                        <tr
-                          key={d.id}
-                          onClick={() => setLensId(d.id)}
-                          className="row-btn cursor-pointer border-b border-[#E6DCC2]"
-                          style={{ background: sel ? 'rgba(232,163,23,0.16)' : undefined }}
-                        >
+                        <tr key={d.id} onClick={() => setLensId(d.id)} className="row-btn cursor-pointer border-b border-[#E6DCC2] hover:bg-white/40" style={{ background: sel ? 'rgba(232,163,23,0.18)' : undefined }}>
                           <td className="py-3 pr-4 font-semibold text-[#14261B]">
-                            <button type="button" aria-pressed={sel} onClick={() => setLensId(d.id)} className="row-btn text-left">
-                              {d.name}
-                            </button>
+                            <button type="button" aria-pressed={sel} onClick={() => setLensId(d.id)} className="row-btn text-left">{d.name}</button>
                           </td>
                           <td className="py-3 pr-4 num text-[#2F4A3A] whitespace-nowrap">{d.grid}</td>
                           <td className="py-3 pr-4 text-[#44544A]">{d.gives}</td>
-                          <td className="py-3 text-[#44544A] whitespace-nowrap">
-                            <span className={d.access === 'Live' ? 'font-semibold text-[#3F7D4C]' : ''}>{d.access}</span>
-                          </td>
+                          <td className="py-3 text-[#44544A] whitespace-nowrap"><span className={d.access === 'Live' ? 'font-semibold text-[#3F7D4C]' : ''}>{d.access}</span></td>
                         </tr>
                       );
                     })}
@@ -1471,12 +1415,12 @@ export function LandingPage() {
           </section>
 
           {/* ------------------------------ Workflow ------------------------------ */}
-          <section id="workflow" className="max-w-6xl mx-auto px-4 sm:px-6 pb-16 sm:pb-24">
-            <div className="glass rounded-2xl p-5 sm:p-6 md:p-10">
-              <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 lg:gap-10">
+          <section id="workflow" className="wrap sec">
+            <div className="glass rounded-3xl p-5 sm:p-8 md:p-12">
+              <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 lg:gap-12">
                 <div className="lg:col-span-4 reveal">
                   <Kicker n="03">How it works</Kicker>
-                  <h2 className="f-serif text-2xl sm:text-3xl md:text-4xl text-[#14261B] leading-tight lg:sticky lg:top-28" style={{ textWrap: 'balance' } as CSSProperties}>
+                  <h2 className="f-serif text-[clamp(1.6rem,1rem+2vw,3rem)] text-[#14261B] leading-tight lg:sticky lg:top-28" style={balance}>
                     From farm coordinates to a rotation you can explain
                   </h2>
                 </div>
@@ -1496,12 +1440,12 @@ export function LandingPage() {
           </section>
 
           {/* ------------------------------ Rotations ------------------------------ */}
-          <section id="rotations" className="max-w-6xl mx-auto px-4 sm:px-6 pb-16 sm:pb-24">
-            <div className="paper rounded-lg p-5 sm:p-6 md:p-10">
+          <section id="rotations" className="wrap sec">
+            <div className="paper rounded-3xl p-5 sm:p-8 md:p-12">
               <div className="flex flex-col md:flex-row md:items-end justify-between gap-4 mb-10 reveal">
                 <div className="md:max-w-2xl">
-                  <Kicker n="04">Rotation model · illustrative Barabanki benchmark</Kicker>
-                  <h2 className="f-serif text-2xl sm:text-3xl md:text-4xl text-[#14261B] leading-tight" style={{ textWrap: 'balance' } as CSSProperties}>
+                  <Kicker n="04">Rotation model</Kicker>
+                  <h2 className="f-serif text-[clamp(1.6rem,1rem+2vw,3rem)] text-[#14261B] leading-tight" style={balance}>
                     Three ways to run the same field
                   </h2>
                 </div>
@@ -1512,9 +1456,8 @@ export function LandingPage() {
               </div>
 
               <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
-                {/* Explorer */}
                 <div className="lg:col-span-7 reveal min-w-0">
-                  <div className="inline-flex max-w-full border border-[#1F3D2B] rounded-md overflow-hidden mb-6" role="tablist" aria-label="Rotation strategy">
+                  <div className="inline-flex max-w-full border border-[#1F3D2B] rounded-full overflow-hidden mb-6" role="tablist" aria-label="Rotation strategy">
                     {STRATEGIES.map((s, i) => (
                       <button
                         key={s.id}
@@ -1522,7 +1465,7 @@ export function LandingPage() {
                         role="tab"
                         aria-selected={strategyIdx === i}
                         onClick={() => setStrategyIdx(i)}
-                        className="seg px-3 sm:px-4 py-2 text-sm font-semibold border-r border-[#1F3D2B] last:border-r-0"
+                        className="seg px-3 sm:px-5 py-2 text-sm font-semibold border-r border-[#1F3D2B] last:border-r-0"
                         style={{ background: strategyIdx === i ? '#1F3D2B' : 'transparent', color: strategyIdx === i ? '#FBF7EC' : '#1F3D2B' }}
                       >
                         Strategy {s.id}
@@ -1542,26 +1485,26 @@ export function LandingPage() {
                     ))}
                   </p>
 
+                  {/* Structure measured straight from the sequence above */}
                   <div className="space-y-5 max-w-md">
-                    <div>
-                      <div className="flex justify-between text-sm mb-1.5">
-                        <span className="font-medium text-[#1B2A20]">Annual water</span>
-                        <span className="num font-semibold">~{strategy.water.toLocaleString('en-IN')} mm</span>
+                    {[
+                      { label: 'Months with a crop in the field', value: `${st.cover} of 12`, pct: (st.cover / 12) * 100, color: '#3C7FA8' },
+                      { label: 'Legume phases (put nitrogen back)', value: `${st.legumes} of ${st.crops}`, pct: (st.legumes / st.crops) * 100, color: '#3F7D4C' },
+                      { label: 'Cereal phases (draw nitrogen)', value: `${st.cereals} of ${st.crops}`, pct: (st.cereals / st.crops) * 100, color: '#C7881C' },
+                    ].map((b) => (
+                      <div key={b.label}>
+                        <div className="flex justify-between text-sm mb-1.5">
+                          <span className="font-medium text-[#1B2A20]">{b.label}</span>
+                          <span className="num font-semibold">{b.value}</span>
+                        </div>
+                        <div className="h-2.5 bg-[#E9E0C7] rounded-full overflow-hidden">
+                          <div className="bar-fill h-full rounded-full" style={{ width: `${b.pct}%`, background: b.color }} />
+                        </div>
                       </div>
-                      <div className="h-2.5 bg-[#E9E0C7] rounded-full overflow-hidden">
-                        <div className="bar-fill h-full rounded-full bg-[#3C7FA8]" style={{ width: `${(strategy.water / maxWater) * 100}%` }} />
-                      </div>
-                    </div>
-                    <div>
-                      <div className="flex justify-between text-sm mb-1.5">
-                        <span className="font-medium text-[#1B2A20]">Net N balance</span>
-                        <span className="num font-semibold" style={{ color: strategy.nTone }}>{strategy.n} kg/ha</span>
-                      </div>
-                      <div className="h-2.5 bg-[#E9E0C7] rounded-full overflow-hidden">
-                        <div className="bar-fill h-full rounded-full" style={{ width: `${(Math.abs(strategy.n) / 250) * 100}%`, background: strategy.nTone }} />
-                      </div>
-                      <p className="text-xs text-[#55634F] mt-1.5">Shorter is better: less nitrogen drawn out of the soil.</p>
-                    </div>
+                    ))}
+                    <p className="text-xs text-[#55634F]">
+                      Counted from the crop sequence. Real water and nitrogen figures for your parcel are calculated in the app from your NASA POWER series and soil values.
+                    </p>
                   </div>
 
                   <p className="mt-6 text-[15px] text-[#2F4A3A] leading-relaxed max-w-lg border-l-2 border-[#E8A317] pl-4">
@@ -1569,93 +1512,50 @@ export function LandingPage() {
                   </p>
                 </div>
 
-                {/* What-if */}
-                <div className="lg:col-span-5 reveal glass-soft rounded-lg p-5 md:p-6 relative min-w-0" style={cv({ '--d': '120ms' })}>
-                  <h3 className="f-serif text-xl text-[#14261B] mb-1">What if the rain falls short?</h3>
-                  <p className="text-sm text-[#55634F] mb-6">Irrigation each rotation would have to make up.</p>
-
-                  <div className="flex items-baseline justify-between mb-3">
-                    <label htmlFor="rain" className="text-sm font-medium text-[#1B2A20]">Rainfall change</label>
-                    <span className="f-serif text-3xl num text-[#1F3D2B]">{rain > 0 ? '+' : ''}{rain}%</span>
-                  </div>
-                  <input id="rain" type="range" min={-40} max={20} step={5} value={rain} onChange={(e) => setRain(Number(e.target.value))} className="range" />
-                  <div className="flex justify-between text-[11px] text-[#55634F] mt-2 mb-6 num">
-                    <span>−40%</span><span>0</span><span>+20%</span>
-                  </div>
-
-                  <div className="space-y-3">
-                    {STRATEGIES.map((s, i) => {
-                      const gap = gapFor(s.water);
-                      const sel = i === strategyIdx;
-                      return (
-                        <button
-                          key={s.id}
-                          type="button"
-                          onClick={() => setStrategyIdx(i)}
-                          className="row-btn w-full text-left rounded-md px-3 py-2.5 border"
-                          style={{ borderColor: sel ? '#1F3D2B' : '#E6DCC2', background: sel ? '#fff' : 'transparent' }}
-                        >
-                          <div className="flex justify-between text-sm mb-1.5">
-                            <span className="font-semibold text-[#14261B]">Strategy {s.id}</span>
-                            <span className="num text-[#2F4A3A]">{Math.round(gap).toLocaleString('en-IN')} mm</span>
-                          </div>
-                          <div className="h-2 bg-[#E9E0C7] rounded-full overflow-hidden">
-                            <div className="bar-fill h-full rounded-full" style={{ width: `${(gap / maxWater) * 100}%`, background: sel ? '#1F3D2B' : '#9DB09F' }} />
-                          </div>
-                        </button>
-                      );
-                    })}
-                  </div>
-
-                  <p className="text-[11px] text-[#55634F] mt-5 leading-relaxed">
-                    Illustrative only. Assumes {ASSUMED_EFFECTIVE_RAIN_MM} mm of effective rainfall a year at 0%.
-                    In the app, this comes from your parcel's NASA POWER series.
+                {/* In-app simulator pitch (no placeholder numbers) */}
+                <div className="lg:col-span-5 reveal glass-dark rounded-2xl p-6 md:p-7 relative min-w-0 text-[#F4EEDC]" style={cv({ '--d': '120ms' })}>
+                  <span className="farmer-ico mb-4"><CloudRain className="w-5 h-5" /></span>
+                  <h3 className="f-serif text-xl mb-2">What if the rain falls short?</h3>
+                  <p className="text-sm text-[#D9D3BE] leading-relaxed mb-5">
+                    The What-If Simulator lowers rainfall or adds a heat wave to your own parcel’s NASA POWER record, then shows how much irrigation each rotation would have to make up.
                   </p>
-
-                  <div className="hidden lg:flex absolute -top-9 right-6 items-end gap-1 f-hand text-xl text-[#B5482A]" style={{ transform: 'rotate(-4deg)' }} aria-hidden="true">
-                    <span>try dragging it</span>
-                    <svg width="34" height="34" viewBox="0 0 34 34" fill="none" stroke="#B5482A" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-                      <path d="M4 6 C 8 20, 18 26, 28 28" />
-                      <path d="M28 28 L19 21 M28 28 L21 33" />
-                    </svg>
-                  </div>
+                  <ul className="text-sm space-y-2 mb-6 text-[#EDE7D2]">
+                    <li className="flex gap-2"><span className="text-[#E8C46A]">→</span> Uses your location, not a sample farm</li>
+                    <li className="flex gap-2"><span className="text-[#E8C46A]">→</span> {STRATEGIES.length} rotations side by side</li>
+                    <li className="flex gap-2"><span className="text-[#E8C46A]">→</span> Missing inputs are flagged, never guessed</li>
+                  </ul>
+                  <button type="button" onClick={handleExploreFarm} className="btn-primary inline-flex items-center gap-2 px-6 py-3 text-sm font-semibold whitespace-nowrap">
+                    <span>Open the simulator</span>
+                    <ArrowRight className="arrow w-4 h-4" />
+                  </button>
                 </div>
               </div>
 
-              {/* Full table */}
+              {/* Full table, derived from the same data */}
               <div className="mt-12 overflow-x-auto reveal">
                 <table className="w-full text-left border-collapse text-sm min-w-[760px]">
                   <thead>
                     <tr className="text-[11px] uppercase tracking-[0.12em] text-[#55634F] border-b-2 border-[#1F3D2B]">
                       <th className="py-2.5 pr-4 font-semibold">Strategy</th>
                       <th className="py-2.5 pr-4 font-semibold">Seasonal Sequence</th>
-                      <th className="py-2.5 pr-4 font-semibold text-right">Annual Water</th>
-                      <th className="py-2.5 pr-4 font-semibold text-right">Net N Balance</th>
+                      <th className="py-2.5 pr-4 font-semibold text-right">Months in crop</th>
+                      <th className="py-2.5 pr-4 font-semibold text-right">Legume phases</th>
                       <th className="py-2.5 font-semibold">Primary Trade-Off</th>
                     </tr>
                   </thead>
                   <tbody>
-                    <tr className="border-b border-[#E6DCC2]">
-                      <td className="py-3.5 pr-4 font-semibold text-[#14261B]">Strategy A · Existing Baseline</td>
-                      <td className="py-3.5 pr-4">Rice (Kharif) → Wheat (Rabi)</td>
-                      <td className="py-3.5 pr-4 text-right num">~1,650 mm</td>
-                      <td className="py-3.5 pr-4 text-right num text-[#B5482A]">-240 kg/ha</td>
-                      <td className="py-3.5 text-[#44544A]">High irrigation draw & cereal nitrogen depletion; strong MSP access.</td>
-                    </tr>
-                    <tr className="border-b border-[#E6DCC2]">
-                      <td className="py-3.5 pr-4 font-semibold text-[#14261B]">Strategy B · Soil Restoration</td>
-                      <td className="py-3.5 pr-4">Rice (Kharif) → Chickpea (Rabi) → Green Gram (Zaid)</td>
-                      <td className="py-3.5 pr-4 text-right num">~1,760 mm</td>
-                      <td className="py-3.5 pr-4 text-right num text-[#3F7D4C]">-60 kg/ha</td>
-                      <td className="py-3.5 text-[#44544A]">Rebuilds N & organic matter via 2 legume phases; tighter turnaround.</td>
-                    </tr>
-                    <tr className="border-b border-[#E6DCC2]">
-                      <td className="py-3.5 pr-4 font-semibold text-[#14261B]">Strategy C · Climate & Water Resilience</td>
-                      <td className="py-3.5 pr-4">Maize (Kharif) → Mustard (Rabi) → Black Gram (Zaid)</td>
-                      <td className="py-3.5 pr-4 text-right num">~1,110 mm</td>
-                      <td className="py-3.5 pr-4 text-right num text-[#C7881C]">-163 kg/ha</td>
-                      <td className="py-3.5 text-[#44544A]">Saves ~33% water vs flooded paddy; requires well-drained Kharif soil.</td>
-                    </tr>
+                    {STRATEGIES.map((s) => {
+                      const m = structureOf(s);
+                      return (
+                        <tr key={s.id} className="border-b border-[#E6DCC2] hover:bg-white/40 transition-colors">
+                          <td className="py-3.5 pr-4 font-semibold text-[#14261B]">Strategy {s.id} · {s.title}</td>
+                          <td className="py-3.5 pr-4">{s.seq.map((x) => `${x.crop} (${SEASONS[x.season].name})`).join(' → ')}</td>
+                          <td className="py-3.5 pr-4 text-right num">{m.cover} / 12</td>
+                          <td className="py-3.5 pr-4 text-right num">{m.legumes}</td>
+                          <td className="py-3.5 text-[#44544A]">{s.tradeoff}</td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
@@ -1663,13 +1563,13 @@ export function LandingPage() {
           </section>
 
           {/* ------------------------------ Transparency ------------------------------ */}
-          <section id="transparency" className="max-w-6xl mx-auto px-4 sm:px-6 pb-16 sm:pb-24">
-            <div className="glass rounded-2xl p-5 sm:p-6 md:p-10">
-              <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 lg:gap-10">
+          <section id="transparency" className="wrap sec">
+            <div className="glass rounded-3xl p-5 sm:p-8 md:p-12">
+              <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 lg:gap-12">
                 <div className="lg:col-span-5 reveal">
                   <div className="relative max-w-[17rem] sm:max-w-sm mx-auto lg:mx-0" style={{ transform: 'rotate(-1.4deg)' }}>
                     <span className="tape -top-3 left-1/2 -translate-x-1/2" style={{ transform: 'translateX(-50%) rotate(2deg)' }} />
-                    <div className="print bg-white p-3 pb-12 relative">
+                    <div className="print bg-white p-3 pb-12 relative rounded-sm">
                       <div className="aspect-[4/5] overflow-hidden">
                         <img
                           src="/src/assets/images/soil_health_field_1794669906877.jpg"
@@ -1687,7 +1587,7 @@ export function LandingPage() {
 
                 <div className="lg:col-span-7 reveal min-w-0" style={cv({ '--d': '100ms' })}>
                   <Kicker n="05">Scientific transparency &amp; limitations</Kicker>
-                  <h2 className="f-serif text-2xl sm:text-3xl md:text-4xl text-[#14261B] leading-tight mb-5" style={{ textWrap: 'balance' } as CSSProperties}>
+                  <h2 className="f-serif text-[clamp(1.6rem,1rem+2vw,3rem)] text-[#14261B] leading-tight mb-5" style={balance}>
                     Decision support, never unverified claims
                   </h2>
                   <p className="text-[#24392C] leading-relaxed mb-5">
@@ -1700,21 +1600,15 @@ export function LandingPage() {
                     generated PDF reports include specific verification items for Krishi Vigyan Kendra (KVK) experts.
                   </p>
 
-                  {/* checklist */}
-                  <div className="paper rounded-lg p-5">
+                  <div className="paper rounded-2xl p-5 sm:p-6">
                     <h3 className="f-serif text-lg text-[#14261B] mb-1">What do you have on hand?</h3>
                     <p className="text-xs text-[#55634F] mb-4">
-                      Missing lab pH, NPK, or unconfigured NASA Earthdata layers are flagged explicitly rather than silently imputed.
+                      Tick what you already have. Missing lab pH, NPK, or unconfigured NASA Earthdata layers are flagged explicitly rather than silently imputed.
                     </p>
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-2.5 mb-5">
                       {CHECKS.map((c) => (
                         <label key={c.id} className="flex items-center gap-2.5 text-sm text-[#1B2A20] cursor-pointer select-none py-0.5">
-                          <input
-                            type="checkbox"
-                            checked={checks[c.id]}
-                            onChange={() => setChecks((p) => ({ ...p, [c.id]: !p[c.id] }))}
-                            className="w-4 h-4 accent-[#1F3D2B]"
-                          />
+                          <input type="checkbox" checked={checks[c.id]} onChange={() => setChecks((p) => ({ ...p, [c.id]: !p[c.id] }))} className="w-4 h-4 accent-[#1F3D2B]" />
                           {c.label}
                         </label>
                       ))}
@@ -1726,9 +1620,7 @@ export function LandingPage() {
                       <span className="f-serif text-xl num text-[#14261B] w-14 text-right">{score}%</span>
                     </div>
                     <p className="text-xs text-[#44544A] mt-3 leading-relaxed">
-                      {missing.length === 0
-                        ? 'Nothing flagged. Every score can show its full inputs.'
-                        : `Flagged as missing: ${missing.map((m) => m.label.toLowerCase()).join(', ')}.`}
+                      {missing.length === 0 ? 'Nothing flagged. Every score can show its full inputs.' : `Flagged as missing: ${missing.map((m) => m.label.toLowerCase()).join(', ')}.`}
                     </p>
                   </div>
                 </div>
@@ -1737,23 +1629,24 @@ export function LandingPage() {
           </section>
 
           {/* ---------------------------------- CTA ---------------------------------- */}
-          <section className="max-w-6xl mx-auto px-4 sm:px-6 pb-32 sm:pb-44">
-            <div className="glass rounded-2xl px-5 py-8 sm:px-6 sm:py-10 md:px-12 grid grid-cols-1 md:grid-cols-12 gap-8 items-center reveal">
+          <section className="wrap pb-32 sm:pb-44">
+            <div className="glass rim rounded-3xl px-5 py-8 sm:px-8 sm:py-12 md:px-14 grid grid-cols-1 md:grid-cols-12 gap-8 items-center reveal">
+              <Rim />
               <div className="md:col-span-8">
-                <h2 className="f-serif text-2xl sm:text-3xl md:text-4xl text-[#14261B] leading-tight mb-3" style={{ textWrap: 'balance' } as CSSProperties}>
-                  Walk one parcel through the whole cropping year
+                <h2 className="f-serif text-[clamp(1.6rem,1rem+2vw,3rem)] text-[#14261B] leading-tight mb-3" style={balance}>
+                  Walk through the whole cropping year
                 </h2>
                 <p className="text-[#24392C] max-w-xl">
-                  Open the demonstration farm, compare the rotations, and test a dry season before you plant anything.
+                  Open the workspace, compare the rotations, and test a dry season before you plant anything.
                 </p>
               </div>
               <div className="md:col-span-4 flex flex-col items-start md:items-end gap-3">
                 <Tractor className="w-36 sm:w-44 -mb-1" />
-                <button type="button" onClick={handleExploreFarm} className="btn-primary inline-flex items-center gap-2 px-6 py-3 text-sm font-semibold whitespace-nowrap">
+                <button type="button" onClick={handleExploreFarm} className="btn-primary inline-flex items-center gap-2 px-7 py-3.5 text-sm font-semibold whitespace-nowrap">
                   <span>{t.cta1}</span>
                   <ArrowRight className="arrow w-4 h-4" />
                 </button>
-                <span className="f-hand text-xl text-[#B5482A]">no sign-up needed for the demo</span>
+                <span className="f-hand text-xl text-[#B5482A]">no sign-up needed to look around</span>
               </div>
             </div>
           </section>
@@ -1762,22 +1655,18 @@ export function LandingPage() {
         {/* ------------------------------ Footer ------------------------------ */}
         <footer className="bg-[#17301F]/80 backdrop-blur-xl text-[#E9E3CE] relative border-t border-white/15">
           <div className="motif pt-0" aria-hidden="true" />
-          <div className="max-w-6xl mx-auto px-4 sm:px-6 py-12 grid grid-cols-1 md:grid-cols-12 gap-8 text-sm">
+          <div className="wrap py-12 grid grid-cols-1 md:grid-cols-12 gap-8 text-sm">
             <div className="md:col-span-5">
               <div className="flex items-center gap-2 text-[#E8C46A] mb-3">
                 <Sprout className="w-6 h-6" />
                 <span className="f-serif text-xl text-[#F4EEDC]">AgriShift</span>
               </div>
-              <p className="text-[#B9C2B0] leading-relaxed max-w-sm">
-                A NASA Space Apps Challenge 2026 project (Field Shift), built around a demonstration parcel in Barabanki, Uttar Pradesh.
-              </p>
+              <p className="text-[#B9C2B0] leading-relaxed max-w-sm">A NASA Space Apps Challenge 2026 project (Field Shift): satellite data and soil results, turned into rotation choices farmers can explain.</p>
             </div>
             <div className="md:col-span-3">
               <div className="text-[11px] uppercase tracking-[0.14em] text-[#8FA08F] mb-3">On this page</div>
               <ul className="space-y-2">
-                {navLinks.map(([l, h]) => (
-                  <li key={h}><a href={h} className="u-link hover:text-white">{l}</a></li>
-                ))}
+                {navLinks.map(([l, h]) => (<li key={h}><a href={h} className="u-link hover:text-white">{l}</a></li>))}
               </ul>
             </div>
             <div className="md:col-span-4">
@@ -1789,7 +1678,7 @@ export function LandingPage() {
             </div>
           </div>
           <div className="border-t border-white/10">
-            <div className="max-w-6xl mx-auto px-4 sm:px-6 py-4 text-xs text-[#8FA08F]">
+            <div className="wrap py-4 text-xs text-[#8FA08F]">
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <span>NASA Space Apps Challenge 2026 (Field Shift)</span>
                 <span className="inline-flex items-center gap-2 f-deva text-[#E8C46A] text-sm">
